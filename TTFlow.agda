@@ -1,21 +1,59 @@
 module TTFlow where
 
 open import Data.List
+open import Data.Unit
 open import Data.Nat
+import Data.Nat.Show as N
 open import Data.Product
+import Data.String as S
+open S hiding (_++_)
 
-Dimension = List ℕ
+_<>_ = S._++_
+infixr 20 _<>_
+
+Shape = List ℕ
 -- the convension is REVERSE to what tensorflow uses, so that the batch dimensions are at the end of the list.
 
-data Tensor (d : Dimension) : Set where
-  MKT : Tensor d
+Effect = ℕ -> String
+
+Gen : ∀ x -> Set
+Gen x = (x -> Effect) -> Effect
+
+newVar : Gen String
+newVar = λ k n → k ("var" <> N.show n) (suc n)
+
+gen : String -> Gen ⊤
+gen s = λ k n → s <> k tt n
+
+data Tensor (d : Shape) : Set where
+  MKT : Gen String -> Tensor d
 
 
 add_n : ∀ {d} -> Tensor d -> Tensor d -> Tensor d
-add_n _ _ = MKT
+add_n (MKT t1) (MKT t2) = MKT λ k →
+  newVar \v ->
+  t1 \x ->
+  t2 \y ->
+  gen (v <> " = tf.add_n(" <> x <> "," <> y <> ")\n") \ _ ->
+  k v
+
+showShape : Shape -> String
+showShape [] = ""
+showShape (x ∷ s) = N.show x <> "," <> showShape s 
+
+parameter : String -> ∀ shape -> Tensor shape
+parameter name shape = MKT λ k →
+  gen (name <> " = tf.Variable(tf.zeros([" <> showShape shape <> "])) ") \ _ ->
+  k name
+
+-- weights = tf.Variable(tf.random_normal([784, 200], stddev=0.35),
+--                       name="weights")
 
 matmul : ∀ {batchShape m n o} -> Tensor (o ∷ n ∷ batchShape) -> Tensor (m ∷ o ∷ batchShape) -> Tensor (m ∷ n ∷ batchShape)
-matmul _ _ = MKT
+matmul _ _ = MKT {!!}
+
+
+{-
 
 mul : ∀ {batchShape} -> Tensor (batchShape) -> Tensor (batchShape) -> Tensor (batchShape)
 mul _ _ = MKT
@@ -34,9 +72,6 @@ split _ = MKT , MKT
 
 split0 : ∀ n -> ∀{ys m} -> Tensor ((n + m) ∷ ys) -> Tensor (n ∷ ys) × Tensor (m ∷ ys)
 split0 n _ = MKT , MKT
-
-parameter : ∀ shape -> Tensor shape
-parameter shape = MKT
 
 transpose : ∀ {xs} -> Tensor xs -> Tensor (reverse xs)
 transpose _ = MKT
@@ -90,3 +125,4 @@ lstm n {x} Wf Wi Wc Wo ( state , input ) with split0 n state
          o = sigmoid (matvecmul Wo hx)
          C = add_n (mul f Ct-1)  (mul i C~)
          h = add_n o (tanh C)
+-}
