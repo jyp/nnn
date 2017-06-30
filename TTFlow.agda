@@ -2,7 +2,8 @@ module TTFlow where
 
 open import Data.List
 open import Data.Unit
-open import Data.Nat
+import Data.Nat
+open Data.Nat hiding (_*_)
 import Data.Nat.Show as N
 open import Data.Product
 import Data.String as S
@@ -29,6 +30,25 @@ data Tensor (d : Shape) : Set where
   MKT : Gen String -> Tensor d
 
 
+parens : String -> String
+parens x = "(" <> x <> ")"
+
+brackets : String -> String
+brackets x = "[" <> x <> "]"
+
+commas : List String -> String
+commas [] = ""
+commas xs = foldr (\x y -> x <> ", " <> y) "" xs
+
+funcall : String -> List String -> String
+funcall f args = f <> (parens (commas args))
+
+binOp : ∀ {s1 s2 s3} -> String -> Tensor s1 -> Tensor s2 -> Tensor s3
+binOp op (MKT t) (MKT u) = MKT λ k →  t \x -> u \y -> k (funcall op ( x ∷ y ∷ [] ))
+
+unOp : ∀ {s1 s2} -> String -> Tensor s1 -> Tensor s2
+unOp op (MKT t) = MKT λ k →  t (\x -> k ("matmul" <> (parens (x))))
+
 add_n : ∀ {d} -> Tensor d -> Tensor d -> Tensor d
 add_n (MKT t1) (MKT t2) = MKT λ k →
   newVar \v ->
@@ -49,74 +69,81 @@ parameter name shape = MKT λ k →
 -- weights = tf.Variable(tf.random_normal([784, 200], stddev=0.35),
 --                       name="weights")
 
+
 matmul : ∀ {batchShape m n o} -> Tensor (o ∷ n ∷ batchShape) -> Tensor (m ∷ o ∷ batchShape) -> Tensor (m ∷ n ∷ batchShape)
-matmul _ _ = MKT {!!}
+matmul (MKT t) (MKT u) = MKT λ k →
+  t (\x -> u \y -> k ("matmul" <> (parens (x <> "," <> y))))
 
-
-{-
+_*_ = matmul
 
 mul : ∀ {batchShape} -> Tensor (batchShape) -> Tensor (batchShape) -> Tensor (batchShape)
-mul _ _ = MKT
+mul = binOp "multiply"
+
+_⊙_ = mul
 
 flatten : ∀ {xs} -> Tensor xs -> Tensor [ product xs ]
-flatten _ = MKT
+flatten = unOp "flatten"
+
 
 eye : (numRows numColumns : ℕ) → ∀{batchShape} -> Tensor ( numColumns ∷ numRows ∷ batchShape  )
-eye numRows numColumns = MKT
+eye numRows numColumns {batchShape} = MKT \k ->
+  k (funcall "tf.eye" (N.show numRows ∷ N.show numColumns ∷ showShape batchShape ∷ []))
 
-scalar_mul : Tensor [] -> ∀ {d} -> Tensor d -> Tensor d
-scalar_mul _ _ = MKT
+scalar_mul : ∀ {d} -> Tensor [] -> Tensor d -> Tensor d
+scalar_mul t u = binOp "tf.scalar_mul" t u
 
-split : ∀{xs ys d1 d2} -> Tensor (xs ++ (d1 + d2) ∷ ys) -> Tensor (xs ++ d1 ∷ ys) × Tensor (xs ++ d2 ∷ ys)
-split _ = MKT , MKT
-
-split0 : ∀ n -> ∀{ys m} -> Tensor ((n + m) ∷ ys) -> Tensor (n ∷ ys) × Tensor (m ∷ ys)
-split0 n _ = MKT , MKT
+-- split0 : ∀ n -> ∀{ys m} -> Tensor ((n + m) ∷ ys) -> Gen (Tensor (n ∷ ys) × Tensor (m ∷ ys))
+-- split0 n {ys} t = ?
 
 transpose : ∀ {xs} -> Tensor xs -> Tensor (reverse xs)
-transpose _ = MKT
+transpose = unOp "tf.transpose"
 
 diag : (n : ℕ) → Tensor ( n ∷ n ∷ [] )
-diag n = MKT
+diag n = eye n n
 
 
 -- ------------------------------------
 -- Higher-level things (not in TF)
 
-last : ∀{xs ys d} -> Tensor (xs ++ d ∷ ys) -> Tensor (xs ++ ys)
-last _ = MKT
+-- last : ∀{xs ys d} -> Tensor (xs ++ d ∷ ys) -> Tensor (xs ++ ys)
+-- last _ = MKT {!!}
 
-concat0 : ∀{ys d1 d2} -> Tensor (d1 ∷ ys) -> Tensor (d2 ∷ ys) -> Tensor (d1 + d2 ∷ ys) 
-concat0 _ _ = MKT
+concat0 : ∀{ys d1 d2} -> Tensor (d1 ∷ ys) -> Tensor (d2 ∷ ys) -> Tensor (d1 + d2 ∷ ys)
+concat0 {ys} (MKT t) (MKT u) = MKT λ k →  t \x -> u \y -> k (funcall "concat" (brackets (commas ( x ∷ y ∷ [] )) ∷ "axis=" <> N.show axis ∷ []))
+  where axis : ℕ
+        axis = length ys -- check
 
-concat1 : ∀{xs ys d1 d2} -> Tensor (xs ∷ d1 ∷ ys) -> Tensor (xs ∷ d2 ∷ ys) -> Tensor (xs ∷ (d1 + d2) ∷ ys) 
-concat1 _ _ = MKT
+concat1 : ∀{xs ys d1 d2} -> Tensor (xs ∷ d1 ∷ ys) -> Tensor (xs ∷ d2 ∷ ys) -> Tensor (xs ∷ (d1 + d2) ∷ ys)
+concat1 {xs} {ys} (MKT t) (MKT u) = MKT λ k →  t \x -> u \y -> k (funcall "concat" (brackets (commas ( x ∷ y ∷ [] )) ∷ "axis=" <> N.show axis ∷ []))
+  where axis : ℕ
+        axis = length ys -- check
 
-
-rnn : ∀ {state input output} n ->
-         ((Tensor state × Tensor input) -> (Tensor state × Tensor output)) ->
-         (Tensor state × Tensor (n ∷ input)) -> (Tensor state × Tensor (n ∷ output))
-rnn n cell _ = MKT , MKT
+rnn : ∀ {state : Set} {input output} n ->
+         ((state × Tensor input) -> (state × Tensor output)) ->
+         (state × Tensor (n ∷ input)) -> (state × Tensor (n ∷ output))
+rnn n cell ( st0 , inputs ) = _
+   -- unvectorize the tensor;
+   -- foldmap
+   -- revectorise
 
 sigmoid : ∀ {d} -> Tensor d -> Tensor d
-sigmoid _ = MKT
+sigmoid = unOp "sigmoid"
 
 tanh : ∀ {d} -> Tensor d -> Tensor d
-tanh _ = MKT
+tanh = unOp "tanh"
 
 
 matvecmul : ∀ {batchShape cols rows} -> Tensor (cols ∷ rows ∷ batchShape) -> Tensor (cols ∷ batchShape) -> Tensor (rows ∷ batchShape)
-matvecmul _ _ = MKT
+matvecmul _ _ = MKT {!!}
 
 
 lstm : ∀ n {x} -> (Wf : Tensor ((n + x) ∷ n ∷ [])) ->
                   (Wi : Tensor ((n + x) ∷ n ∷ [])) ->
                   (WC : Tensor ((n + x) ∷ n ∷ [])) ->
                   (Wo : Tensor ((n + x) ∷ n ∷ [])) ->
-                  Tensor [ n + n  ] × Tensor [ x ] ->
-                  Tensor [ n + n ] × Tensor [ n ]
-lstm n {x} Wf Wi Wc Wo ( state , input ) with split0 n state
-... | ht-1 , Ct-1 = concat0 C h , h
+                  (Tensor [ n ] × Tensor [ n ]) × Tensor [ x ] ->
+                  (Tensor [ n ] × Tensor [ n ]) × Tensor [ n ]
+lstm n {x} Wf Wi Wc Wo ((ht-1 , Ct-1) , input) = (C , h) , h
   where  hx : Tensor [ n + x ]
          hx = concat0 ht-1 input
          f = sigmoid (matvecmul Wf hx) -- TODO: biases
@@ -125,4 +152,3 @@ lstm n {x} Wf Wi Wc Wo ( state , input ) with split0 n state
          o = sigmoid (matvecmul Wo hx)
          C = add_n (mul f Ct-1)  (mul i C~)
          h = add_n o (tanh C)
--}
