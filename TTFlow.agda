@@ -1,6 +1,8 @@
 module TTFlow where
 
 open import Data.List
+import Data.Vec as Vec
+open Vec using (Vec)
 open import Data.Unit
 import Data.Nat
 open Data.Nat hiding (_*_)
@@ -118,13 +120,6 @@ concat1 {xs} {ys} (MKT t) (MKT u) = MKT λ k →  t \x -> u \y -> k (funcall "co
   where axis : ℕ
         axis = length ys -- check
 
-rnn : ∀ {state : Set} {input output} n ->
-         ((state × Tensor input) -> (state × Tensor output)) ->
-         (state × Tensor (n ∷ input)) -> (state × Tensor (n ∷ output))
-rnn n cell ( st0 , inputs ) = _
-   -- unvectorize the tensor;
-   -- foldmap
-   -- revectorise
 
 sigmoid : ∀ {d} -> Tensor d -> Tensor d
 sigmoid = unOp "sigmoid"
@@ -132,9 +127,18 @@ sigmoid = unOp "sigmoid"
 tanh : ∀ {d} -> Tensor d -> Tensor d
 tanh = unOp "tanh"
 
+expandDim0 : ∀ {batchShape} -> Tensor batchShape -> Tensor (1 ∷ batchShape)
+expandDim0 {batchShape} (MKT t) = MKT (λ k →
+  t \ x ->
+  k (funcall "expand_dims" ( x ∷  "axis=" <> N.show (length batchShape) ∷ [])))
+
+squeeze0 : ∀ {batchShape} -> Tensor (1 ∷ batchShape) -> Tensor batchShape
+squeeze0 {batchShape} (MKT t) = MKT (λ k →
+  t \ x ->
+  k (funcall "squeeze" ( x ∷  "axis=" <> N.show (length batchShape) ∷ [])))
 
 matvecmul : ∀ {batchShape cols rows} -> Tensor (cols ∷ rows ∷ batchShape) -> Tensor (cols ∷ batchShape) -> Tensor (rows ∷ batchShape)
-matvecmul _ _ = MKT {!!}
+matvecmul m v = squeeze0 (matmul m (expandDim0 v))
 
 
 lstm : ∀ n {x} -> (Wf : Tensor ((n + x) ∷ n ∷ [])) ->
@@ -152,3 +156,26 @@ lstm n {x} Wf Wi Wc Wo ((ht-1 , Ct-1) , input) = (C , h) , h
          o = sigmoid (matvecmul Wo hx)
          C = add_n (mul f Ct-1)  (mul i C~)
          h = add_n o (tanh C)
+
+untensor : ∀ {n xs} -> Tensor (n ∷ xs) -> Vec (Tensor xs) n
+untensor = {!!}
+
+mkTensor : ∀ {n xs} ->  Vec (Tensor xs) n -> Tensor (n ∷ xs)
+mkTensor = {!!}
+
+chain : {state a b : Set} -> ∀ {n} -> (state × a -> state × b) → (state × Vec a n) -> state × Vec b n
+chain f (s0 , Vec.[]) = s0 , Vec.[]
+chain f (s0 , x Vec.∷ v) with chain f {! s1 , ? !}
+... | _ = {!!}
+  where s1,x' = f (s0 , x)
+        s1 = proj₁ s1,x'
+        x' = proj₂ s1,x'
+
+rnn : ∀ {state : Set} {input output} n ->
+         ((state × Tensor input) -> (state × Tensor output)) ->
+         (state × Tensor (n ∷ input)) -> (state × Tensor (n ∷ output))
+rnn n cell ( st0 , inputs ) = {!!} , (mkTensor {!!})
+
+example : ∀ n x -> ((Tensor [ n ] × Tensor [ n ]) × Tensor (n ∷ x ∷ [])) -> (Tensor [ n ] × Tensor [ n ]) × Tensor (n ∷ n ∷ [])
+example n x = rnn n (lstm _ {!!} {!!} {!!} {!!})
+
