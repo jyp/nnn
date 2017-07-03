@@ -1,3 +1,10 @@
+{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE DeriveFoldable #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# OPTIONS_GHC -fplugin GHC.TypeLits.KnownNat.Solver #-}
+
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE UnicodeSyntax #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE MagicHash #-}
@@ -6,19 +13,26 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE DataKinds #-}
 
+import Prelude hiding (tanh)
 
 import GHC.TypeLits
 -- import GHC.TypeLits.KnownNat
 import Data.Proxy
-
+import Data.Monoid
+import Control.Monad (ap)
+------------------
+-- TYPES 
 type family (++) xs ys where
    '[] ++  xs       = xs
    (x ': xs) ++ ys       = x ': (xs ++ ys)
 
+data V (n::Nat) (a :: *) = V [a]
+  deriving (Functor, Foldable, Traversable)
+
 data T (shape :: [Nat]) where
   T :: String -> T shape
 
-data SNat n where
+data SNat (n :: Nat) where
   SNat :: KnownNat n => Proxy n -> SNat n
 
 data SShape s where
@@ -34,31 +48,171 @@ instance KnownShape '[] where
 instance (KnownNat x, KnownShape xs) => KnownShape (x ': xs) where
   shapeSing = Cons (SNat Proxy) shapeSing
 
-rtShape :: SShape s -> [Integer]
-rtShape Nil = []
-rtShape (Cons (SNat x) xs) = natVal x : rtShape xs
+shapeToList :: SShape s -> [Integer]
+shapeToList Nil = []
+shapeToList (Cons (SNat x) xs) = natVal x : shapeToList xs
 
-matmul :: T (o ': n ': batchShape) -> T (m ': o ': batchShape) -> T (m ': n ': batchShape)
-matmul _ _ = T "matmul"
+rememberNat :: SNat n -> (KnownNat n => r) -> r
+rememberNat (SNat _) k = k
 
-sigmoid :: forall s. T s -> T s
-sigmoid _ = T "sigmoid"
+--------------------------------
+-- Effects
 
-tanh :: forall s. T s -> T s
-tanh _ = T "tanh"
+type Effect = Integer -> [String]
+
+newtype Gen x = Gen {fromGen ::  (x -> Effect) -> Effect} deriving (Functor)
+
+instance Applicative Gen where
+  pure = return
+  (<*>) = ap
+  
+instance Monad Gen where
+  return x = Gen $ \k -> k x
+  Gen m >>= f = Gen $ \k -> m $ \a -> fromGen (f a) $ \b -> k b
+
+newVar :: Gen String
+newVar = Gen $ \ k n -> k ("var" <> show n) (1 + n)
+
+gen :: String -> Gen ()
+gen s = Gen $ \ k n -> s : k () n
+
+type Tensor shape = Gen (T shape)
+
+-----------------------------------------
 
 
-concat0 :: forall ys d1 d2. (KnownNat d1, KnownShape ys) =>  T (d1 ': ys) -> T (d2 ': ys) -> T (d1 + d2 ': ys)
-concat0 _ _ = T "concat"
+parens :: String -> String
+parens x = "(" <> x <> ")"
+
+brackets :: String -> String
+brackets x = "[" <> x <> "]"
+
+commas :: [String] -> String
+commas [] = ""
+commas xs = foldr (\x y -> x <> ", " <> y) "" xs
+
+funcall :: String -> [String] -> String
+funcall f args = f <> (parens (commas args))
+
+binOp :: forall s1 s2 s3. String -> Tensor s1 -> Tensor s2 -> Tensor s3
+binOp op t u = do
+  T x <- t
+  T y <- u
+  return (T (funcall op [ x , y]))
+
+unOp :: forall s1 s2. String -> Tensor s1 -> Tensor s2
+unOp op t = do
+  T x <- t
+  return (T (funcall op [x]))
+
+--------------------------
+-- TF primitives
+
+add_n :: Tensor d -> Tensor d -> Tensor d
+add_n = binOp "tf.add_n"
+
+(⊕) :: forall (d :: [Nat]). Tensor d -> Tensor d -> Tensor d
+(⊕) = add_n
+
+multiply :: Tensor d -> Tensor d -> Tensor d
+multiply = binOp "tf.multiply"
+
+(⊙) :: forall (d :: [Nat]). Tensor d -> Tensor d -> Tensor d
+(⊙) = multiply
+
+matmul :: Tensor (o ': n ': baTensorchShape) -> Tensor (m ': o ': baTensorchShape) -> Tensor (m ': n ': baTensorchShape)
+matmul = binOp "matmul"
 
 
-expandDim0 :: forall batchShape. KnownShape batchShape => T batchShape -> T (1 ': batchShape)
-expandDim0 _ = T "expandDim"
+sigmoid :: forall s. Tensor s -> Tensor s
+sigmoid = unOp "sigmoid"
+
+tanh :: forall s. Tensor s -> Tensor s
+tanh = unOp "tanh"
+
+
+concat0 :: forall ys d1 d2. (KnownShape ys) =>  Tensor (d1 ': ys) -> Tensor (d2 ': ys) -> Tensor ((d1 + d2) ': ys)
+concat0 t u = do
+  T x <- t
+  T y <- u
+  return (T (funcall "concat" [brackets (commas [x,y]), "axis=" <> show axis]))
+  where ys :: SShape ys
+        ys = shapeSing
+        axis = length $ shapeToList ys -- check
+
+shapeLen :: SShape s -> Int
+shapeLen = length . shapeToList
+
+expandDim0 :: forall batchShape. KnownShape batchShape => Tensor batchShape -> Tensor (1 ': batchShape)
+expandDim0 t = do
+  T x <- t
+  return (T (funcall "expand_dims" [x, "axis=" <> show (shapeLen s)]))
    where s :: SShape batchShape
          s = shapeSing
 
-squeeze0 :: forall batchShape. T (1 ': batchShape) -> T batchShape
-squeeze0 _ = T "squeeze0"
+squeeze0 :: forall batchShape. KnownShape batchShape => Tensor (1 ': batchShape) -> Tensor batchShape
+squeeze0 t = do
+  T x <- t
+  return (T (funcall "expand_dims" [x, "axis=" <> show (shapeLen s)]))
+   where s :: SShape batchShape
+         s = shapeSing
 
-matvecmul :: forall batchShape cols rows. (KnownNat cols, KnownShape batchShape) =>  T (cols ': rows ': batchShape) -> T (cols ': batchShape) -> T (rows ': batchShape)
+unstack :: forall batchShape (n::Nat). (KnownShape batchShape, KnownNat n) => Tensor (n ': batchShape) -> Gen (V n (T batchShape))
+unstack t = do
+  T x <- t
+  v <- newVar
+  gen (v <> " = " <> funcall "tf.unstack" [x, "axis=" <> show (shapeLen batchShape)] )
+  return $ V $ [ T $ v <> brackets (show i)| i <- [0..n-1] ]
+  where batchShape :: SShape batchShape
+        batchShape = shapeSing
+        nProxy :: Proxy n
+        nProxy = Proxy
+        n :: Integer
+        n = natVal nProxy
+
+stack :: forall batchShape (n::Nat). (KnownShape batchShape, KnownNat n) => V n (Tensor batchShape) -> Tensor (n ': batchShape) 
+stack t = do
+  T x <- t
+  v <- newVar
+  gen (v <> " = " <> funcall "tf.unstack" [x, "axis=" <> show (shapeLen batchShape)] )
+  return $ V $ [ T $ v <> brackets (show i)| i <- [0..n-1] ]
+  where batchShape :: SShape batchShape
+        batchShape = shapeSing
+        nProxy :: Proxy n
+        nProxy = Proxy
+        n :: Integer
+        n = natVal nProxy
+
+--------------------
+-- "Contrib"
+
+
+matvecmul :: forall batchShape cols rows. (KnownNat cols, KnownNat rows, KnownShape batchShape) =>  Tensor (cols ': rows ': batchShape) -> Tensor (cols ': batchShape) -> Tensor (rows ': batchShape)
 matvecmul m v = squeeze0 (matmul m (expandDim0 v))
+
+(∙) :: forall batchShape cols rows. (KnownNat cols, KnownNat rows, KnownShape batchShape) =>  Tensor (cols ': rows ': batchShape) -> Tensor (cols ': batchShape) -> Tensor (rows ': batchShape)
+(∙) = matvecmul
+
+type a ⊸ b = (Tensor '[a,b], Tensor '[b])
+
+(#) :: (KnownNat a, KnownNat b) => (a ⊸ b) -> Tensor '[a] -> Tensor '[b]
+(weightMatrix, bias) # v = weightMatrix ∙ v ⊕ bias
+
+
+lstm :: forall n x. (KnownNat x, KnownNat n) => SNat n ->
+        ((n + x) ⊸ n) -> 
+        ((n + x) ⊸ n) ->
+        ((n + x) ⊸ n) ->
+        ((n + x) ⊸ n) ->
+        ((Tensor '[ n ], Tensor '[ n ]) , Tensor '[ x ]) ->
+        ((Tensor '[ n ], Tensor '[ n ]) , Tensor '[ n ])
+lstm _ wf wi wc wo ((ht1 , ct1) , input) = ((c , h) , h)
+  where  hx :: Tensor '[ n + x ]
+         hx = concat0 ht1 input
+         f = sigmoid (wf # hx)
+         i = sigmoid (wi # hx)
+         cTilda = tanh (wc # hx)
+         o = sigmoid (wo # hx)
+         c = (f ⊙ ct1) ⊕ (i ⊙ cTilda)
+         h = o ⊕ tanh c
+
