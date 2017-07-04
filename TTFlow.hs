@@ -220,6 +220,9 @@ lstm _ wf wi wc wo ((ht1 , ct1) , input) = return ((c , h) , h)
          c = (f ⊙ ct1) ⊕ (i ⊙ cTilda)
          h = o ⊕ tanh c
 
+-- dense :: (n ⊸ m) -> (∀ x. T x -> T x) -> Tensor (n ': batchShape) -> Tensor (m ': batchShape)
+-- dense lf activation t = activation (lf # t)
+
 -- | Stack two RNN cells
 stackLayers :: RnnCell s0 a b -> RnnCell s1 b c -> RnnCell (s0,s1) a c
 stackLayers l1 l2 ((s0,s1),x) = do
@@ -235,6 +238,9 @@ stackLayers l1 l2 ((s0,s1),x) = do
 addAttention :: KnownShape batchShape => (state -> Tensor (x ': batchShape)) -> RnnCell state ((a+x) ': batchShape) (b ': batchShape) -> RnnCell state (a ': batchShape) (b ': batchShape)
 addAttention attn l (s,a) = l (s,concat0 a (attn s))
 
+-- | Any pure function can be transformed into a cell by ignoring the RNN state.
+timeDistribute :: (Tensor (a ': batchShape) -> Tensor (b ': batchShape)) -> RnnCell () (a ': batchShape) (b ': batchShape)
+timeDistribute pureLayer (s,a) = return (s, pureLayer a)
 
 -- | Build a RNN by repeating a cell @n@ times.
 rnn :: forall state input output n.
