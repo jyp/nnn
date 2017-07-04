@@ -76,7 +76,7 @@ newVar = Gen $ \ k n -> k ("var" <> show n) (1 + n)
 gen :: String -> Gen ()
 gen s = Gen $ \ k n -> s : k () n
 
-type Tensor shape = Gen (T shape)
+type Tensor shape = T shape
 
 -----------------------------------------
 
@@ -91,19 +91,17 @@ commas :: [String] -> String
 commas [] = ""
 commas xs = foldr (\x y -> x <> ", " <> y) "" xs
 
+list :: [String] -> String
+list = brackets . commas
+
 funcall :: String -> [String] -> String
 funcall f args = f <> (parens (commas args))
 
 binOp :: forall s1 s2 s3. String -> Tensor s1 -> Tensor s2 -> Tensor s3
-binOp op t u = do
-  T x <- t
-  T y <- u
-  return (T (funcall op [ x , y]))
+binOp op (T x) (T y) = T (funcall op [ x , y])
 
 unOp :: forall s1 s2. String -> Tensor s1 -> Tensor s2
-unOp op t = do
-  T x <- t
-  return (T (funcall op [x]))
+unOp op (T x) = T (funcall op [x])
 
 --------------------------
 -- TF primitives
@@ -131,11 +129,11 @@ tanh :: forall s. Tensor s -> Tensor s
 tanh = unOp "tanh"
 
 
-concat0 :: forall ys d1 d2. (KnownShape ys) =>  Tensor (d1 ': ys) -> Tensor (d2 ': ys) -> Tensor ((d1 + d2) ': ys)
-concat0 t u = do
-  T x <- t
-  T y <- u
-  return (T (funcall "concat" [brackets (commas [x,y]), "axis=" <> show axis]))
+concat0 :: forall ys d1 d2. (KnownShape ys) =>  T (d1 ': ys) -> T (d2 ': ys) -> T ((d1 + d2) ': ys)
+concat0 t u =
+  let T x = t
+      T y = u
+  in (T (funcall "concat" [brackets (commas [x,y]), "axis=" <> show axis]))
   where ys :: SShape ys
         ys = shapeSing
         axis = length $ shapeToList ys -- check
@@ -144,22 +142,17 @@ shapeLen :: SShape s -> Int
 shapeLen = length . shapeToList
 
 expandDim0 :: forall batchShape. KnownShape batchShape => Tensor batchShape -> Tensor (1 ': batchShape)
-expandDim0 t = do
-  T x <- t
-  return (T (funcall "expand_dims" [x, "axis=" <> show (shapeLen s)]))
+expandDim0 (T x) = (T (funcall "expand_dims" [x, "axis=" <> show (shapeLen s)]))
    where s :: SShape batchShape
          s = shapeSing
 
 squeeze0 :: forall batchShape. KnownShape batchShape => Tensor (1 ': batchShape) -> Tensor batchShape
-squeeze0 t = do
-  T x <- t
-  return (T (funcall "expand_dims" [x, "axis=" <> show (shapeLen s)]))
+squeeze0 (T x) = T (funcall "expand_dims" [x, "axis=" <> show (shapeLen s)])
    where s :: SShape batchShape
          s = shapeSing
 
 unstack :: forall batchShape (n::Nat). (KnownShape batchShape, KnownNat n) => Tensor (n ': batchShape) -> Gen (V n (T batchShape))
-unstack t = do
-  T x <- t
+unstack (T x) = do
   v <- newVar
   gen (v <> " = " <> funcall "tf.unstack" [x, "axis=" <> show (shapeLen batchShape)] )
   return $ V $ [ T $ v <> brackets (show i)| i <- [0..n-1] ]
@@ -170,18 +163,10 @@ unstack t = do
         n :: Integer
         n = natVal nProxy
 
-stack :: forall batchShape (n::Nat). (KnownShape batchShape, KnownNat n) => V n (Tensor batchShape) -> Tensor (n ': batchShape) 
-stack t = do
-  T x <- t
-  v <- newVar
-  gen (v <> " = " <> funcall "tf.unstack" [x, "axis=" <> show (shapeLen batchShape)] )
-  return $ V $ [ T $ v <> brackets (show i)| i <- [0..n-1] ]
+stack :: forall batchShape (n::Nat). (KnownShape batchShape, KnownNat n) => V n (T batchShape) -> Tensor (n ': batchShape) 
+stack (V xs) = T (funcall "tf.stack" [(list [x | T x <- xs]), "axis=" <> show (shapeLen batchShape)])
   where batchShape :: SShape batchShape
         batchShape = shapeSing
-        nProxy :: Proxy n
-        nProxy = Proxy
-        n :: Integer
-        n = natVal nProxy
 
 --------------------
 -- "Contrib"
@@ -195,7 +180,7 @@ matvecmul m v = squeeze0 (matmul m (expandDim0 v))
 
 type a ⊸ b = (Tensor '[a,b], Tensor '[b])
 
-(#) :: (KnownNat a, KnownNat b) => (a ⊸ b) -> Tensor '[a] -> Tensor '[b]
+(#) :: (KnownNat a, KnownNat b) => (a ⊸ b) -> T '[a] -> Tensor '[b]
 (weightMatrix, bias) # v = weightMatrix ∙ v ⊕ bias
 
 
@@ -204,10 +189,10 @@ lstm :: forall n x. (KnownNat x, KnownNat n) => SNat n ->
         ((n + x) ⊸ n) ->
         ((n + x) ⊸ n) ->
         ((n + x) ⊸ n) ->
-        ((Tensor '[ n ], Tensor '[ n ]) , Tensor '[ x ]) ->
-        ((Tensor '[ n ], Tensor '[ n ]) , Tensor '[ n ])
-lstm _ wf wi wc wo ((ht1 , ct1) , input) = ((c , h) , h)
-  where  hx :: Tensor '[ n + x ]
+        ((T '[ n ], T '[ n ]) , T '[ x ]) ->
+        Gen ((T '[ n ], T '[ n ]) , T '[ n ])
+lstm _ wf wi wc wo ((ht1 , ct1) , input) = return ((c , h) , h)
+  where  hx :: T '[ n + x ]
          hx = concat0 ht1 input
          f = sigmoid (wf # hx)
          i = sigmoid (wi # hx)
@@ -215,4 +200,22 @@ lstm _ wf wi wc wo ((ht1 , ct1) , input) = ((c , h) , h)
          o = sigmoid (wo # hx)
          c = (f ⊙ ct1) ⊕ (i ⊙ cTilda)
          h = o ⊕ tanh c
+
+chain :: forall state a b n. ((state , a) -> Gen (state , b)) → (state , V n a) -> Gen (state , V n b)
+chain _ (s0 , V []) = return (s0 , V [])
+chain f (s0 , V (x:xs)) = do
+  (s1,x') <- f (s0 , x)
+  (sFin,V xs') <- chain f (s1 , V xs)
+  return (sFin,V (x':xs'))
+
+-- chain' :: forall state a b n. ((state , a) -> (state , b)) → (state , V n a) -> (state , V n b)
+
+rnn :: forall state input output n.
+       (KnownNat n, KnownShape input, KnownShape output) =>
+       ((state , T input) -> Gen (state , T output)) ->
+       (state , Tensor (n ': input)) -> Gen (state , Tensor (n ': output))
+rnn cell (s0, t) = do
+  xs <- unstack t
+  (sFin,us) <- chain cell (s0,xs)
+  return (sFin,stack us)
 
