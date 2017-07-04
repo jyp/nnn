@@ -1,3 +1,6 @@
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE TypeInType #-}
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -26,9 +29,10 @@ type family (++) xs ys where
    '[] ++  xs       = xs
    (x ': xs) ++ ys       = x ': (xs ++ ys)
 
-data V (n::Nat) (a :: *) = V [a]
+data V (n::Nat) a = V [a]
   deriving (Functor, Foldable, Traversable)
 
+type Shape = [Nat]
 data T (shape :: [Nat]) where
   T :: String -> T shape
 
@@ -51,6 +55,13 @@ instance (KnownNat x, KnownShape xs) => KnownShape (x ': xs) where
 shapeToList :: SShape s -> [Integer]
 shapeToList Nil = []
 shapeToList (Cons (SNat x) xs) = natVal x : shapeToList xs
+
+showShape :: forall (s :: Shape). KnownShape s => String
+showShape = show (shapeToList s)
+  where
+    s :: SShape s
+    s = shapeSing
+ 
 
 rememberNat :: SNat n -> (KnownNat n => r) -> r
 rememberNat (SNat _) k = k
@@ -105,6 +116,12 @@ unOp op (T x) = T (funcall op [x])
 
 --------------------------
 -- TF primitives
+
+parameter :: forall (shape :: [Nat]). KnownShape shape => String -> Gen (T shape)
+parameter name = do -- FIMXE: initialization function
+  gen (name <> " = tf.Variable(tf.zeros(" <> (showShape @ shape) <> ")) ") 
+  return (T name) -- FIXME: I don't understand how batch shape works in TF.
+
 
 add_n :: Tensor d -> Tensor d -> Tensor d
 add_n = binOp "tf.add_n"
@@ -183,6 +200,7 @@ stack :: forall batchShape (n::Nat). (KnownShape batchShape) => V n (T batchShap
 stack (V xs) = T (funcall "tf.stack" [(list [x | T x <- xs]), "axis=" <> show (shapeLen batchShape)])
   where batchShape :: SShape batchShape
         batchShape = shapeSing
+
 
 --------------------
 -- "Contrib"
