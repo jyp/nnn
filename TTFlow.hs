@@ -140,11 +140,10 @@ unOp op (T x) = T (funcall op [x])
 -- TF primitives
 
 -- | Declare a parameter to optimize.
-parameter :: forall (shape :: [Nat]). KnownShape shape => String -> Gen (T shape)
-parameter name = do -- FIMXE: initialization function
+parameter' :: forall (shape :: [Nat]). KnownShape shape => String -> Gen (T shape)
+parameter' name = do -- FIMXE: initialization function
   gen (name <> " = tf.Variable(tf.zeros(" <> (showShape @ shape) <> ")) ") 
   return (T name)
-
 
 add_n :: ∀ d s. Tensor (d++s) -> Tensor d -> Tensor (d++s) -- note ++s for for 'broadcasting'
 add_n = binOp "tf.add_n"
@@ -211,6 +210,26 @@ stack (V xs) = T (funcall "tf.stack" [(list [x | T x <- xs]), "axis=" <> show (s
 transpose :: forall s. T (Reverse s) -> T s
 transpose = unOp "tf.transpose"
 
+
+
+-------------------------
+-- Generic parameters
+
+class Parameter p where
+  parameter :: String -> Gen p
+
+instance KnownShape shape => Parameter (T shape) where
+  parameter = parameter'
+
+instance (Parameter p, Parameter q) => Parameter (p,q) where
+  parameter s = (,) <$> parameter (s<>".fst") <*> parameter (s<>".snd")
+
+instance (Parameter p1, Parameter p2, Parameter p3) => Parameter (p1,p2,p3) where
+  parameter s = (,,) <$> parameter (s<>".1") <*> parameter (s<>".2") <*> parameter (s<>".3")
+
+instance (Parameter p1, Parameter p2, Parameter p3, Parameter p4) => Parameter (p1,p2,p3,p4) where
+  parameter s = (,,,) <$> parameter (s<>".1") <*> parameter (s<>".2") <*> parameter (s<>".3") <*> parameter (s<>".4")
+
 --------------------
 -- "Contrib"
 
@@ -234,12 +253,12 @@ type a ⊸ b = (Tensor '[a,b], Tensor '[b])
 type RnnCell state input output = (state , T input) -> Gen (state , T output)
 
 lstm :: forall n x bs. (KnownNat bs) => SNat n ->
-        ((n + x) ⊸ n) ->
-        ((n + x) ⊸ n) ->
-        ((n + x) ⊸ n) ->
-        ((n + x) ⊸ n) ->
+        (((n + x) ⊸ n),
+         ((n + x) ⊸ n),
+         ((n + x) ⊸ n),
+         ((n + x) ⊸ n)) ->
         RnnCell (T '[n,bs], T '[n,bs]) '[x,bs] '[n,bs]
-lstm _ wf wi wc wo ((ht1 , ct1) , input) = return ((c , h) , h)
+lstm _ (wf,wi,wc,wo) ((ht1 , ct1) , input) = return ((c , h) , h)
   where  hx :: T '[ n + x, bs ]
          hx = concat0 ht1 input
          f = sigmoid (wf # hx)
@@ -268,7 +287,8 @@ stackLayers l1 l2 ((s0,s1),x) = do
 addAttention :: KnownShape batchShape => (state -> Tensor (x ': batchShape)) -> RnnCell state ((a+x) ': batchShape) (b ': batchShape) -> RnnCell state (a ': batchShape) (b ': batchShape)
 addAttention attn l (s,a) = l (s,concat0 a (attn s))
 
--- | Any pure function can be transformed into a cell by ignoring the RNN state.
+-- | Any pure function (layer) can be transformed into a cell by
+-- ignoring the RNN state.
 timeDistribute :: (Tensor (a ': batchShape) -> Tensor (b ': batchShape)) -> RnnCell () (a ': batchShape) (b ': batchShape)
 timeDistribute pureLayer (s,a) = return (s, pureLayer a)
 
