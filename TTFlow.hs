@@ -60,19 +60,33 @@ instance KnownShape '[] where
 instance (KnownNat x, KnownShape xs) => KnownShape (x ': xs) where
   shapeSing = Cons (SNat Proxy) shapeSing
 
-shapeToList :: SShape s -> [Integer]
-shapeToList Nil = []
-shapeToList (Cons (SNat x) xs) = natVal x : shapeToList xs
+getShape :: ∀s. KnownShape s=> SShape s
+getShape = shapeSing
+
+shapeToList' :: SShape s -> [Integer]
+shapeToList' Nil = []
+shapeToList' (Cons (SNat x) xs) = natVal x : shapeToList' xs
+
+
+shapeToList :: ∀(s::Shape). KnownShape s => [Integer]
+shapeToList = shapeToList' (getShape @ s)
+
 
 showShape :: forall (s :: Shape). KnownShape s => String
-showShape = show (shapeToList s)
-  where
-    s :: SShape s
-    s = shapeSing
- 
+showShape = show (shapeToList @ s)
+
+shapeLen :: ∀ (s::Shape). KnownShape s => Int
+shapeLen = length (shapeToList @ s)
+
+showShapeLen :: ∀ (s::Shape). KnownShape s => String
+showShapeLen = show (shapeLen @ s)
 
 rememberNat :: SNat n -> (KnownNat n => r) -> r
 rememberNat (SNat _) k = k
+
+
+showNat :: ∀(n::Nat). KnownNat n => String
+showNat = show (natVal (Proxy @ n))
 
 --------------------------------
 -- Generation Effects
@@ -132,7 +146,7 @@ parameter name = do -- FIMXE: initialization function
   return (T name)
 
 
-add_n :: Tensor (d++s) -> Tensor d -> Tensor (d++s) -- note ++s for for 'broadcasting'
+add_n :: ∀ d s. Tensor (d++s) -> Tensor d -> Tensor (d++s) -- note ++s for for 'broadcasting'
 add_n = binOp "tf.add_n"
 
 (⊕) :: forall (d :: [Nat]) (s :: [Nat]). Tensor (d ++ s) -> Tensor d -> Tensor (d ++ s)
@@ -145,70 +159,54 @@ multiply = binOp "tf.multiply"
 (⊙) = multiply
 
 matmul :: Tensor (o ': n ': baTensorchShape) -> Tensor (m ': o ': baTensorchShape) -> Tensor (m ': n ': baTensorchShape)
-matmul = binOp "matmul"
+matmul = binOp "tf.matmul"
 
 
 sigmoid :: forall s. Tensor s -> Tensor s
-sigmoid = unOp "sigmoid"
+sigmoid = unOp "tf.sigmoid"
 
 tanh :: forall s. Tensor s -> Tensor s
-tanh = unOp "tanh"
+tanh = unOp "tf.tanh"
 
 split0 :: forall m n batchShape. (KnownNat n, KnownNat m, KnownShape batchShape) => Tensor ((n + m) ': batchShape) -> Gen (Tensor (n ': batchShape) , Tensor (m ': batchShape))
 split0 (T x) = do
   v1 <- newVar
   v2 <- newVar
-  gen (v1 <> "," <> v2 <> " = " <> funcall "tf.split" [x, list [show n, show m], "axis=" <> show (shapeLen s)])
+  gen (v1 <> "," <> v2 <> " = " <> funcall "tf.split" [x, list [show n, show m], "axis=" <> showShapeLen @batchShape])
   return (T v1, T v2)
-  where s :: SShape batchShape
-        s = shapeSing
-        nProxy :: Proxy n
-        nProxy = Proxy
-        n :: Integer
-        n = natVal nProxy
-        mProxy :: Proxy m
-        mProxy = Proxy
-        m :: Integer
-        m = natVal mProxy
+  where n = natVal (Proxy @ n)
+        m = natVal (Proxy @ m)
 
 concat0 :: forall ys d1 d2. (KnownShape ys) =>  T (d1 ': ys) -> T (d2 ': ys) -> T ((d1 + d2) ': ys)
 concat0 t u =
   let T x = t
       T y = u
   in (T (funcall "concat" [brackets (commas [x,y]), "axis=" <> show axis]))
-  where ys :: SShape ys
-        ys = shapeSing
-        axis = length $ shapeToList ys -- check
+  where axis = shapeLen @ ys -- check
 
-shapeLen :: SShape s -> Int
-shapeLen = length . shapeToList
+expandDim :: forall s0 batchShape. KnownShape batchShape => Tensor (s0 ++ batchShape) -> Tensor (s0 ++ (1 ': batchShape))
+expandDim (T x) = (T (funcall "tf.expand_dims" [x, "axis=" <> show (shapeLen @ batchShape)]))
 
-expandDim0 :: forall batchShape. KnownShape batchShape => Tensor batchShape -> Tensor (1 ': batchShape)
-expandDim0 (T x) = (T (funcall "expand_dims" [x, "axis=" <> show (shapeLen s)]))
-   where s :: SShape batchShape
-         s = shapeSing
+expandDim0 :: forall batchShape. KnownShape batchShape => Tensor batchShape -> Tensor ((1 ': batchShape))
+expandDim0 = expandDim @ '[]
+
+
+squeeze :: forall s0 s1. KnownShape s1 => Tensor (s0 ++ (1 ': s1)) -> Tensor (s0 ++ s1)
+squeeze (T x) = T (funcall "tf.squeeze" [x, "axis=" <> show (shapeLen @ s1)])
 
 squeeze0 :: forall batchShape. KnownShape batchShape => Tensor (1 ': batchShape) -> Tensor batchShape
-squeeze0 (T x) = T (funcall "expand_dims" [x, "axis=" <> show (shapeLen s)])
-   where s :: SShape batchShape
-         s = shapeSing
+squeeze0 = squeeze @ '[]
+
 
 unstack :: forall batchShape (n::Nat). (KnownShape batchShape, KnownNat n) => Tensor (n ': batchShape) -> Gen (V n (T batchShape))
 unstack (T x) = do
   v <- newVar
-  gen (v <> " = " <> funcall "tf.unstack" [x, "axis=" <> show (shapeLen batchShape)] )
+  gen (v <> " = " <> funcall "tf.unstack" [x, "axis=" <> show (shapeLen @ batchShape)] )
   return $ V $ [ T $ v <> brackets (show i)| i <- [0..n-1] ]
-  where batchShape :: SShape batchShape
-        batchShape = shapeSing
-        nProxy :: Proxy n
-        nProxy = Proxy
-        n :: Integer
-        n = natVal nProxy
+        where n = natVal (Proxy @ n)
 
 stack :: forall batchShape (n::Nat). (KnownShape batchShape) => V n (T batchShape) -> Tensor (n ': batchShape) 
-stack (V xs) = T (funcall "tf.stack" [(list [x | T x <- xs]), "axis=" <> show (shapeLen batchShape)])
-  where batchShape :: SShape batchShape
-        batchShape = shapeSing
+stack (V xs) = T (funcall "tf.stack" [(list [x | T x <- xs]), "axis=" <> show (shapeLen @ batchShape)])
 
 transpose :: forall s. T (Reverse s) -> T s
 transpose = unOp "tf.transpose"
