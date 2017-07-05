@@ -176,11 +176,14 @@ placeholder name typ = do
   return (T name)
 
 
-add_n :: ∀ d s. Tensor (d++s) -> Tensor d -> Tensor (d++s) -- note ++s for for 'broadcasting'
-add_n = binOp "tf.add_n"
+add :: ∀ d s. Tensor (d++s) -> Tensor d -> Tensor (d++s) -- note ++s for for 'broadcasting'
+add = binOp "tf.add_n"
+
+add_n :: ∀ s. [Tensor s] -> Tensor s
+add_n = error "add_n not implemented"
 
 (⊕) :: forall (d :: [Nat]) (s :: [Nat]). Tensor (d ++ s) -> Tensor d -> Tensor (d ++ s)
-(⊕) = add_n @d @s
+(⊕) = add @d @s
 
 multiply :: Tensor d -> Tensor d -> Tensor d
 multiply = binOp "tf.multiply"
