@@ -161,13 +161,14 @@ zeros = T (funcall "tf.zeros" [(showShape @ shape)])
 parameter' :: forall (shape :: [Nat]). String -> T shape -> Gen (T shape)
 parameter' name (T initial) = do -- FIMXE: initialization function
   v <- newVar
-  gen (name <> " = " <> funcall "tf.Variable" [initial])
+  gen (v <-- funcall "tf.Variable" [initial, "name=" <> show name])
   return (T v)
 
-data Typ = Float32
+data Typ = Float32 | Int32
 
 instance Show Typ where
   show Float32 = "tf.float32"
+  show Int32 = "tf.int32"
 
 placeholder :: ∀s. KnownShape s => String -> Typ -> Gen (T s)
 placeholder name typ = do
@@ -210,7 +211,7 @@ concat0 :: forall ys d1 d2. (KnownShape ys) =>  T (d1 ': ys) -> T (d2 ': ys) -> 
 concat0 t u =
   let T x = t
       T y = u
-  in (T (funcall "concat" [brackets (commas [x,y]), "axis=" <> show axis]))
+  in (T (funcall "tf.concat" [brackets (commas [x,y]), "axis=" <> show axis]))
   where axis = shapeLen @ ys -- check
 
 expandDim :: forall s0 batchShape. KnownShape batchShape => Tensor (s0 ++ batchShape) -> Tensor (s0 ++ (1 ': batchShape))
@@ -242,9 +243,6 @@ transpose = unOp "tf.transpose"
 
 gather :: ∀s n indexShape. T (s ++ '[n]) -> T indexShape -> T (s ++ indexShape)
 gather = binOp "tf.gather"
-
-gather_nd :: ∀s n indexShape. T (n ': s) -> T indexShape -> T (s ++ indexShape)
-gather_nd = binOp "tf.gather_nd"
 
 -------------------------
 -- Generic parameters
@@ -296,8 +294,7 @@ type a ⊸ b = (Tensor '[a,b], Tensor '[b])
 
 -- | embedding layer
 embedding :: ∀ embeddingSize numObjects batchSize. Tensor '[numObjects, embeddingSize] -> Tensor '[1,batchSize] -> Tensor '[embeddingSize,batchSize]
--- embedding param input = gather @ '[embeddingSize] (transpose param) (squeeze0 input)
-embedding param input = gather_nd @ '[embeddingSize] param (squeeze0 input)
+embedding param input = gather @ '[embeddingSize] (transpose param) (squeeze0 input)
 
 dense :: (n ⊸ m) -> Tensor '[n, batchSize] -> Tensor '[m, batchSize]
 dense lf t = (lf # t)
@@ -363,6 +360,9 @@ rnn cell (s0, t) = do
   (sFin,us) <- chain cell (s0,xs)
   return (sFin,stack us)
 
+-- TODO: attempt to do this with
+-- tf.foldl
+
 -- | RNN helper
 chain :: forall state a b n. ((state , a) -> Gen (state , b)) → (state , V n a) -> Gen (state , V n b)
 chain _ (s0 , V []) = return (s0 , V [])
@@ -391,9 +391,9 @@ example1 input = do
 (|>) = (,)
 infixr |>
 
-mkModel :: KnownShape s => (Tensor s -> Gen (Tensor s')) -> Gen ()
-mkModel f = do
-  x <- placeholder "x" Float32
+mkModel :: KnownShape s => Typ -> (Tensor s -> Gen (Tensor s')) -> Gen ()
+mkModel typ f = do
+  x <- placeholder "x" typ
   T y <- f x
   gen ("y = " <> y)
   return ()
@@ -402,9 +402,111 @@ generate :: Gen () -> String
 generate s = unlines (fromGen s (\() _v0 -> []) 0)
 
 main :: IO ()
-main = putStrLn $ generate $ mkModel $ example1 @ 1024
+main = putStrLn $ generate $ mkModel Int32 $ example1 @ 1024
 
 {-> main
 
+x = tf.placeholder(tf.int32, shape=[1024,1,20])
+var0 = tf.Variable(tf.zeros([50,100000]), name="params_1")
+var1 = tf.Variable(tf.zeros([150,200]), name="params_2_1_fst")
+var2 = tf.Variable(tf.zeros([150]), name="params_2_1_snd")
+var3 = tf.Variable(tf.zeros([150,200]), name="params_2_2_fst")
+var4 = tf.Variable(tf.zeros([150]), name="params_2_2_snd")
+var5 = tf.Variable(tf.zeros([150,200]), name="params_2_3_fst")
+var6 = tf.Variable(tf.zeros([150]), name="params_2_3_snd")
+var7 = tf.Variable(tf.zeros([150,200]), name="params_2_4_fst")
+var8 = tf.Variable(tf.zeros([150]), name="params_2_4_snd")
+var9 = tf.Variable(tf.zeros([150,300]), name="params_3_1_fst")
+var10 = tf.Variable(tf.zeros([150]), name="params_3_1_snd")
+var11 = tf.Variable(tf.zeros([150,300]), name="params_3_2_fst")
+var12 = tf.Variable(tf.zeros([150]), name="params_3_2_snd")
+var13 = tf.Variable(tf.zeros([150,300]), name="params_3_3_fst")
+var14 = tf.Variable(tf.zeros([150]), name="params_3_3_snd")
+var15 = tf.Variable(tf.zeros([150,300]), name="params_3_4_fst")
+var16 = tf.Variable(tf.zeros([150]), name="params_3_4_snd")
+var17 = tf.Variable(tf.zeros([150,150]), name="params_4_fst")
+var18 = tf.Variable(tf.zeros([150]), name="params_4_snd")
+var19 = tf.unstack(x, axis=2)
+var20 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([tf.zeros([1024,150]), tf.gather(tf.transpose(var0), tf.squeeze(var19[0], axis=1))], axis=1), tf.transpose(var1)), var2)), tf.zeros([1024,150])), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([tf.zeros([1024,150]), tf.gather(tf.transpose(var0), tf.squeeze(var19[0], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([tf.zeros([1024,150]), tf.gather(tf.transpose(var0), tf.squeeze(var19[0], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var21 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([tf.zeros([1024,150]), tf.gather(tf.transpose(var0), tf.squeeze(var19[0], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var20))
+var22 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([tf.zeros([1024,150]), var21], axis=1), tf.transpose(var9)), var10)), tf.zeros([1024,150])), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([tf.zeros([1024,150]), var21], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([tf.zeros([1024,150]), var21], axis=1), tf.transpose(var13)), var14))))
+var23 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([tf.zeros([1024,150]), var21], axis=1), tf.transpose(var15)), var16)), tf.tanh(var22))
+var24 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var20, tf.gather(tf.transpose(var0), tf.squeeze(var19[1], axis=1))], axis=1), tf.transpose(var1)), var2)), var21), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var20, tf.gather(tf.transpose(var0), tf.squeeze(var19[1], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var20, tf.gather(tf.transpose(var0), tf.squeeze(var19[1], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var25 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var20, tf.gather(tf.transpose(var0), tf.squeeze(var19[1], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var24))
+var26 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var22, var25], axis=1), tf.transpose(var9)), var10)), var23), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var22, var25], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var22, var25], axis=1), tf.transpose(var13)), var14))))
+var27 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var22, var25], axis=1), tf.transpose(var15)), var16)), tf.tanh(var26))
+var28 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var24, tf.gather(tf.transpose(var0), tf.squeeze(var19[2], axis=1))], axis=1), tf.transpose(var1)), var2)), var25), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var24, tf.gather(tf.transpose(var0), tf.squeeze(var19[2], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var24, tf.gather(tf.transpose(var0), tf.squeeze(var19[2], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var29 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var24, tf.gather(tf.transpose(var0), tf.squeeze(var19[2], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var28))
+var30 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var26, var29], axis=1), tf.transpose(var9)), var10)), var27), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var26, var29], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var26, var29], axis=1), tf.transpose(var13)), var14))))
+var31 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var26, var29], axis=1), tf.transpose(var15)), var16)), tf.tanh(var30))
+var32 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var28, tf.gather(tf.transpose(var0), tf.squeeze(var19[3], axis=1))], axis=1), tf.transpose(var1)), var2)), var29), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var28, tf.gather(tf.transpose(var0), tf.squeeze(var19[3], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var28, tf.gather(tf.transpose(var0), tf.squeeze(var19[3], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var33 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var28, tf.gather(tf.transpose(var0), tf.squeeze(var19[3], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var32))
+var34 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var30, var33], axis=1), tf.transpose(var9)), var10)), var31), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var30, var33], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var30, var33], axis=1), tf.transpose(var13)), var14))))
+var35 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var30, var33], axis=1), tf.transpose(var15)), var16)), tf.tanh(var34))
+var36 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var32, tf.gather(tf.transpose(var0), tf.squeeze(var19[4], axis=1))], axis=1), tf.transpose(var1)), var2)), var33), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var32, tf.gather(tf.transpose(var0), tf.squeeze(var19[4], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var32, tf.gather(tf.transpose(var0), tf.squeeze(var19[4], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var37 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var32, tf.gather(tf.transpose(var0), tf.squeeze(var19[4], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var36))
+var38 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var34, var37], axis=1), tf.transpose(var9)), var10)), var35), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var34, var37], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var34, var37], axis=1), tf.transpose(var13)), var14))))
+var39 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var34, var37], axis=1), tf.transpose(var15)), var16)), tf.tanh(var38))
+var40 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var36, tf.gather(tf.transpose(var0), tf.squeeze(var19[5], axis=1))], axis=1), tf.transpose(var1)), var2)), var37), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var36, tf.gather(tf.transpose(var0), tf.squeeze(var19[5], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var36, tf.gather(tf.transpose(var0), tf.squeeze(var19[5], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var41 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var36, tf.gather(tf.transpose(var0), tf.squeeze(var19[5], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var40))
+var42 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var38, var41], axis=1), tf.transpose(var9)), var10)), var39), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var38, var41], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var38, var41], axis=1), tf.transpose(var13)), var14))))
+var43 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var38, var41], axis=1), tf.transpose(var15)), var16)), tf.tanh(var42))
+var44 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var40, tf.gather(tf.transpose(var0), tf.squeeze(var19[6], axis=1))], axis=1), tf.transpose(var1)), var2)), var41), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var40, tf.gather(tf.transpose(var0), tf.squeeze(var19[6], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var40, tf.gather(tf.transpose(var0), tf.squeeze(var19[6], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var45 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var40, tf.gather(tf.transpose(var0), tf.squeeze(var19[6], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var44))
+var46 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var42, var45], axis=1), tf.transpose(var9)), var10)), var43), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var42, var45], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var42, var45], axis=1), tf.transpose(var13)), var14))))
+var47 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var42, var45], axis=1), tf.transpose(var15)), var16)), tf.tanh(var46))
+var48 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var44, tf.gather(tf.transpose(var0), tf.squeeze(var19[7], axis=1))], axis=1), tf.transpose(var1)), var2)), var45), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var44, tf.gather(tf.transpose(var0), tf.squeeze(var19[7], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var44, tf.gather(tf.transpose(var0), tf.squeeze(var19[7], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var49 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var44, tf.gather(tf.transpose(var0), tf.squeeze(var19[7], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var48))
+var50 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var46, var49], axis=1), tf.transpose(var9)), var10)), var47), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var46, var49], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var46, var49], axis=1), tf.transpose(var13)), var14))))
+var51 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var46, var49], axis=1), tf.transpose(var15)), var16)), tf.tanh(var50))
+var52 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var48, tf.gather(tf.transpose(var0), tf.squeeze(var19[8], axis=1))], axis=1), tf.transpose(var1)), var2)), var49), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var48, tf.gather(tf.transpose(var0), tf.squeeze(var19[8], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var48, tf.gather(tf.transpose(var0), tf.squeeze(var19[8], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var53 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var48, tf.gather(tf.transpose(var0), tf.squeeze(var19[8], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var52))
+var54 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var50, var53], axis=1), tf.transpose(var9)), var10)), var51), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var50, var53], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var50, var53], axis=1), tf.transpose(var13)), var14))))
+var55 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var50, var53], axis=1), tf.transpose(var15)), var16)), tf.tanh(var54))
+var56 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var52, tf.gather(tf.transpose(var0), tf.squeeze(var19[9], axis=1))], axis=1), tf.transpose(var1)), var2)), var53), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var52, tf.gather(tf.transpose(var0), tf.squeeze(var19[9], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var52, tf.gather(tf.transpose(var0), tf.squeeze(var19[9], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var57 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var52, tf.gather(tf.transpose(var0), tf.squeeze(var19[9], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var56))
+var58 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var54, var57], axis=1), tf.transpose(var9)), var10)), var55), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var54, var57], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var54, var57], axis=1), tf.transpose(var13)), var14))))
+var59 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var54, var57], axis=1), tf.transpose(var15)), var16)), tf.tanh(var58))
+var60 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var56, tf.gather(tf.transpose(var0), tf.squeeze(var19[10], axis=1))], axis=1), tf.transpose(var1)), var2)), var57), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var56, tf.gather(tf.transpose(var0), tf.squeeze(var19[10], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var56, tf.gather(tf.transpose(var0), tf.squeeze(var19[10], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var61 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var56, tf.gather(tf.transpose(var0), tf.squeeze(var19[10], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var60))
+var62 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var58, var61], axis=1), tf.transpose(var9)), var10)), var59), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var58, var61], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var58, var61], axis=1), tf.transpose(var13)), var14))))
+var63 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var58, var61], axis=1), tf.transpose(var15)), var16)), tf.tanh(var62))
+var64 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var60, tf.gather(tf.transpose(var0), tf.squeeze(var19[11], axis=1))], axis=1), tf.transpose(var1)), var2)), var61), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var60, tf.gather(tf.transpose(var0), tf.squeeze(var19[11], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var60, tf.gather(tf.transpose(var0), tf.squeeze(var19[11], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var65 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var60, tf.gather(tf.transpose(var0), tf.squeeze(var19[11], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var64))
+var66 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var62, var65], axis=1), tf.transpose(var9)), var10)), var63), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var62, var65], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var62, var65], axis=1), tf.transpose(var13)), var14))))
+var67 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var62, var65], axis=1), tf.transpose(var15)), var16)), tf.tanh(var66))
+var68 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var64, tf.gather(tf.transpose(var0), tf.squeeze(var19[12], axis=1))], axis=1), tf.transpose(var1)), var2)), var65), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var64, tf.gather(tf.transpose(var0), tf.squeeze(var19[12], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var64, tf.gather(tf.transpose(var0), tf.squeeze(var19[12], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var69 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var64, tf.gather(tf.transpose(var0), tf.squeeze(var19[12], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var68))
+var70 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var66, var69], axis=1), tf.transpose(var9)), var10)), var67), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var66, var69], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var66, var69], axis=1), tf.transpose(var13)), var14))))
+var71 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var66, var69], axis=1), tf.transpose(var15)), var16)), tf.tanh(var70))
+var72 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var68, tf.gather(tf.transpose(var0), tf.squeeze(var19[13], axis=1))], axis=1), tf.transpose(var1)), var2)), var69), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var68, tf.gather(tf.transpose(var0), tf.squeeze(var19[13], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var68, tf.gather(tf.transpose(var0), tf.squeeze(var19[13], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var73 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var68, tf.gather(tf.transpose(var0), tf.squeeze(var19[13], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var72))
+var74 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var70, var73], axis=1), tf.transpose(var9)), var10)), var71), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var70, var73], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var70, var73], axis=1), tf.transpose(var13)), var14))))
+var75 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var70, var73], axis=1), tf.transpose(var15)), var16)), tf.tanh(var74))
+var76 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var72, tf.gather(tf.transpose(var0), tf.squeeze(var19[14], axis=1))], axis=1), tf.transpose(var1)), var2)), var73), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var72, tf.gather(tf.transpose(var0), tf.squeeze(var19[14], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var72, tf.gather(tf.transpose(var0), tf.squeeze(var19[14], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var77 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var72, tf.gather(tf.transpose(var0), tf.squeeze(var19[14], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var76))
+var78 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var74, var77], axis=1), tf.transpose(var9)), var10)), var75), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var74, var77], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var74, var77], axis=1), tf.transpose(var13)), var14))))
+var79 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var74, var77], axis=1), tf.transpose(var15)), var16)), tf.tanh(var78))
+var80 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var76, tf.gather(tf.transpose(var0), tf.squeeze(var19[15], axis=1))], axis=1), tf.transpose(var1)), var2)), var77), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var76, tf.gather(tf.transpose(var0), tf.squeeze(var19[15], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var76, tf.gather(tf.transpose(var0), tf.squeeze(var19[15], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var81 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var76, tf.gather(tf.transpose(var0), tf.squeeze(var19[15], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var80))
+var82 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var78, var81], axis=1), tf.transpose(var9)), var10)), var79), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var78, var81], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var78, var81], axis=1), tf.transpose(var13)), var14))))
+var83 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var78, var81], axis=1), tf.transpose(var15)), var16)), tf.tanh(var82))
+var84 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var80, tf.gather(tf.transpose(var0), tf.squeeze(var19[16], axis=1))], axis=1), tf.transpose(var1)), var2)), var81), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var80, tf.gather(tf.transpose(var0), tf.squeeze(var19[16], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var80, tf.gather(tf.transpose(var0), tf.squeeze(var19[16], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var85 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var80, tf.gather(tf.transpose(var0), tf.squeeze(var19[16], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var84))
+var86 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var82, var85], axis=1), tf.transpose(var9)), var10)), var83), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var82, var85], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var82, var85], axis=1), tf.transpose(var13)), var14))))
+var87 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var82, var85], axis=1), tf.transpose(var15)), var16)), tf.tanh(var86))
+var88 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var84, tf.gather(tf.transpose(var0), tf.squeeze(var19[17], axis=1))], axis=1), tf.transpose(var1)), var2)), var85), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var84, tf.gather(tf.transpose(var0), tf.squeeze(var19[17], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var84, tf.gather(tf.transpose(var0), tf.squeeze(var19[17], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var89 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var84, tf.gather(tf.transpose(var0), tf.squeeze(var19[17], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var88))
+var90 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var86, var89], axis=1), tf.transpose(var9)), var10)), var87), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var86, var89], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var86, var89], axis=1), tf.transpose(var13)), var14))))
+var91 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var86, var89], axis=1), tf.transpose(var15)), var16)), tf.tanh(var90))
+var92 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var88, tf.gather(tf.transpose(var0), tf.squeeze(var19[18], axis=1))], axis=1), tf.transpose(var1)), var2)), var89), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var88, tf.gather(tf.transpose(var0), tf.squeeze(var19[18], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var88, tf.gather(tf.transpose(var0), tf.squeeze(var19[18], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var93 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var88, tf.gather(tf.transpose(var0), tf.squeeze(var19[18], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var92))
+var94 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var90, var93], axis=1), tf.transpose(var9)), var10)), var91), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var90, var93], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var90, var93], axis=1), tf.transpose(var13)), var14))))
+var95 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var90, var93], axis=1), tf.transpose(var15)), var16)), tf.tanh(var94))
+var96 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var92, tf.gather(tf.transpose(var0), tf.squeeze(var19[19], axis=1))], axis=1), tf.transpose(var1)), var2)), var93), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var92, tf.gather(tf.transpose(var0), tf.squeeze(var19[19], axis=1))], axis=1), tf.transpose(var3)), var4)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var92, tf.gather(tf.transpose(var0), tf.squeeze(var19[19], axis=1))], axis=1), tf.transpose(var5)), var6))))
+var97 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var92, tf.gather(tf.transpose(var0), tf.squeeze(var19[19], axis=1))], axis=1), tf.transpose(var7)), var8)), tf.tanh(var96))
+var98 = tf.add_n(tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var94, var97], axis=1), tf.transpose(var9)), var10)), var95), tf.multiply(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var94, var97], axis=1), tf.transpose(var11)), var12)), tf.tanh(tf.add_n(tf.matmul(tf.concat([var94, var97], axis=1), tf.transpose(var13)), var14))))
+var99 = tf.add_n(tf.sigmoid(tf.add_n(tf.matmul(tf.concat([var94, var97], axis=1), tf.transpose(var15)), var16)), tf.tanh(var98))
+y = tf.stack([tf.nn.softmax(tf.add_n(tf.matmul(var23, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var27, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var31, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var35, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var39, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var43, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var47, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var51, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var55, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var59, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var63, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var67, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var71, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var75, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var79, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var83, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var87, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var91, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var95, tf.transpose(var17)), var18)), tf.nn.softmax(tf.add_n(tf.matmul(var99, tf.transpose(var17)), var18))], axis=2)
 -}
 
