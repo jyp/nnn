@@ -19,6 +19,7 @@
 
 import Prelude hiding (tanh)
 
+import Data.List (intercalate)
 import GHC.TypeLits
 -- import GHC.TypeLits.KnownNat
 import Data.Proxy
@@ -77,13 +78,11 @@ shapeToList' :: SShape s -> [Integer]
 shapeToList' Nil = []
 shapeToList' (Cons (SNat x) xs) = natVal x : shapeToList' xs
 
-
 shapeToList :: ∀(s::Shape). KnownShape s => [Integer]
 shapeToList = shapeToList' (getShape @ s)
 
-
 showShape :: forall (s :: Shape). KnownShape s => String
-showShape = show (shapeToList @ s)
+showShape = show (reverse (shapeToList @ s))
 
 showShapeLen :: ∀ (s::Shape). KnownLen s => String
 showShapeLen = show (shapeLen @ s)
@@ -128,11 +127,13 @@ brackets :: String -> String
 brackets x = "[" <> x <> "]"
 
 commas :: [String] -> String
-commas [] = ""
-commas xs = foldr (\x y -> x <> ", " <> y) "" xs
+commas = intercalate ", "
 
 list :: [String] -> String
 list = brackets . commas
+
+(<--) :: [Char] -> [Char] -> [Char]
+x <-- y = x <> " = " <> y
 
 funcall :: String -> [String] -> String
 funcall f args = f <> (parens (commas args))
@@ -143,6 +144,13 @@ binOp op (T x) (T y) = T (funcall op [ x , y])
 unOp :: forall s1 s2. String -> Tensor s1 -> Tensor s2
 unOp op (T x) = T (funcall op [x])
 
+assign :: ∀s. (T s) -> Gen (T s)
+assign (T x) = do
+  v <- newVar
+  gen (v <-- x)
+  return (T v)
+
+
 --------------------------
 -- TF primitives
 
@@ -152,8 +160,20 @@ zeros = T (funcall "tf.zeros" [(showShape @ shape)])
 -- | Declare a parameter to optimize.
 parameter' :: forall (shape :: [Nat]). String -> T shape -> Gen (T shape)
 parameter' name (T initial) = do -- FIMXE: initialization function
+  v <- newVar
   gen (name <> " = " <> funcall "tf.Variable" [initial])
+  return (T v)
+
+data Typ = Float32
+
+instance Show Typ where
+  show Float32 = "tf.float32"
+
+placeholder :: ∀s. KnownShape s => String -> Typ -> Gen (T s)
+placeholder name typ = do
+  gen (name <> " = " <> funcall "tf.placeholder" [show typ,"shape=" <> showShape @ s])
   return (T name)
+
 
 add_n :: ∀ d s. Tensor (d++s) -> Tensor d -> Tensor (d++s) -- note ++s for for 'broadcasting'
 add_n = binOp "tf.add_n"
@@ -220,8 +240,11 @@ stack (V xs) = T (funcall "tf.stack" [(list [x | T x <- xs]), "axis=" <> show (s
 transpose :: forall s. T (Reverse s) -> T s
 transpose = unOp "tf.transpose"
 
-gather :: ∀s n indexShape. T (s ++ '[n]) -> T indexShape -> T (s ++ indexShape )
+gather :: ∀s n indexShape. T (s ++ '[n]) -> T indexShape -> T (s ++ indexShape)
 gather = binOp "tf.gather"
+
+gather_nd :: ∀s n indexShape. T (n ': s) -> T indexShape -> T (s ++ indexShape)
+gather_nd = binOp "tf.gather_nd"
 
 -------------------------
 -- Generic parameters
@@ -233,13 +256,13 @@ instance KnownShape shape => Parameter (T shape) where
   parameter s = parameter' s zeros
 
 instance (Parameter p, Parameter q) => Parameter (p,q) where
-  parameter s = (,) <$> parameter (s<>".fst") <*> parameter (s<>".snd")
+  parameter s = (,) <$> parameter (s<>"_fst") <*> parameter (s<>"_snd")
 
 instance (Parameter p1, Parameter p2, Parameter p3) => Parameter (p1,p2,p3) where
-  parameter s = (,,) <$> parameter (s<>".1") <*> parameter (s<>".2") <*> parameter (s<>".3")
+  parameter s = (,,) <$> parameter (s<>"_1") <*> parameter (s<>"_2") <*> parameter (s<>"_3")
 
 instance (Parameter p1, Parameter p2, Parameter p3, Parameter p4) => Parameter (p1,p2,p3,p4) where
-  parameter s = (,,,) <$> parameter (s<>".1") <*> parameter (s<>".2") <*> parameter (s<>".3") <*> parameter (s<>".4")
+  parameter s = (,,,) <$> parameter (s<>"_1") <*> parameter (s<>"_2") <*> parameter (s<>"_3") <*> parameter (s<>"_4")
 
 --------------------
 -- "Contrib"
@@ -247,7 +270,7 @@ instance (Parameter p1, Parameter p2, Parameter p3, Parameter p4) => Parameter (
 
 ----------------
 -- Helpers
-matvecmulBatch :: forall batchShape cols rows. (KnownNat cols, KnownNat rows, KnownShape batchShape) =>  Tensor (cols ': rows ': batchShape) -> Tensor (cols ': batchShape) -> Tensor (rows ': batchShape)
+matvecmulBatch :: forall batchShape cols rows. (KnownNat cols, KnownShape batchShape) =>  Tensor (cols ': rows ': batchShape) -> Tensor (cols ': batchShape) -> Tensor (rows ': batchShape)
 matvecmulBatch m v = squeeze0 (matmul m (expandDim0 v))
 
 matvecmul :: Tensor (cols ': rows ': '[]) -> Tensor (cols ': batchSize ': '[]) -> Tensor (rows ': batchSize ': '[])
@@ -273,7 +296,8 @@ type a ⊸ b = (Tensor '[a,b], Tensor '[b])
 
 -- | embedding layer
 embedding :: ∀ embeddingSize numObjects batchSize. Tensor '[numObjects, embeddingSize] -> Tensor '[1,batchSize] -> Tensor '[embeddingSize,batchSize]
-embedding param input = gather @ '[embeddingSize] (transpose param) (squeeze0 input)
+-- embedding param input = gather @ '[embeddingSize] (transpose param) (squeeze0 input)
+embedding param input = gather_nd @ '[embeddingSize] param (squeeze0 input)
 
 dense :: (n ⊸ m) -> Tensor '[n, batchSize] -> Tensor '[m, batchSize]
 dense lf t = (lf # t)
@@ -298,15 +322,16 @@ lstm :: forall n x bs. (KnownNat bs) =>
          ((n + x) ⊸ n),
          ((n + x) ⊸ n)) ->
         RnnCell (T '[n,bs], T '[n,bs]) '[x,bs] '[n,bs]
-lstm (wf,wi,wc,wo) ((ht1 , ct1) , input) = return ((c , h) , h)
+lstm (wf,wi,wc,wo) ((ht1 , ct1) , input) = do
+  c <- assign ((f ⊙ ct1) ⊕ (i ⊙ cTilda))
+  h <- assign (o ⊕ tanh c)
+  return ((c , h) , h)
   where  hx :: T '[ n + x, bs ]
          hx = concat0 ht1 input
          f = sigmoid (wf # hx)
          i = sigmoid (wi # hx)
          cTilda = tanh (wc # hx)
          o = sigmoid (wo # hx)
-         c = (f ⊙ ct1) ⊕ (i ⊙ cTilda)
-         h = o ⊕ tanh c
 
 -- | Stack two RNN cells
 stackLayers :: RnnCell s0 a b -> RnnCell s1 b c -> RnnCell (s0,s1) a c
@@ -365,4 +390,21 @@ example1 input = do
 (|>) :: forall a b. a -> b -> (a, b)
 (|>) = (,)
 infixr |>
+
+mkModel :: KnownShape s => (Tensor s -> Gen (Tensor s')) -> Gen ()
+mkModel f = do
+  x <- placeholder "x" Float32
+  T y <- f x
+  gen ("y = " <> y)
+  return ()
+
+generate :: Gen () -> String
+generate s = unlines (fromGen s (\() _v0 -> []) 0)
+
+main :: IO ()
+main = putStrLn $ generate $ mkModel $ example1 @ 1024
+
+{-> main
+
+-}
 
