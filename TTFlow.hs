@@ -1,3 +1,4 @@
+{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE TypeInType #-}
@@ -29,6 +30,13 @@ type family (++) xs ys where
    '[] ++  xs       = xs
    (x ': xs) ++ ys       = x ': (xs ++ ys)
 
+type family Reverse' xs ys where
+  Reverse' '[] ys = ys
+  Reverse' (x ': xs) ys = Reverse' xs (x ': ys )
+
+type family Reverse xs where
+  Reverse xs = Reverse' xs '[]
+
 data V (n::Nat) a = V [a]
   deriving (Functor, Foldable, Traversable)
 
@@ -42,7 +50,7 @@ data SNat (n :: Nat) where
 data SShape s where
   Nil :: SShape '[]
   Cons :: SNat x -> SShape xs -> SShape (x ': xs)
-  
+
 class KnownShape s where
   shapeSing :: SShape s
 
@@ -117,17 +125,18 @@ unOp op (T x) = T (funcall op [x])
 --------------------------
 -- TF primitives
 
+-- | Declare a parameter to optimize.
 parameter :: forall (shape :: [Nat]). KnownShape shape => String -> Gen (T shape)
 parameter name = do -- FIMXE: initialization function
   gen (name <> " = tf.Variable(tf.zeros(" <> (showShape @ shape) <> ")) ") 
-  return (T name) -- FIXME: I don't understand how batch shape works in TF.
+  return (T name)
 
 
-add_n :: Tensor d -> Tensor d -> Tensor d
+add_n :: Tensor (d++s) -> Tensor d -> Tensor (d++s) -- note ++s for for 'broadcasting'
 add_n = binOp "tf.add_n"
 
-(⊕) :: forall (d :: [Nat]). Tensor d -> Tensor d -> Tensor d
-(⊕) = add_n
+(⊕) :: forall (d :: [Nat]) (s :: [Nat]). Tensor (d ++ s) -> Tensor d -> Tensor (d ++ s)
+(⊕) = add_n @d @s
 
 multiply :: Tensor d -> Tensor d -> Tensor d
 multiply = binOp "tf.multiply"
@@ -201,35 +210,39 @@ stack (V xs) = T (funcall "tf.stack" [(list [x | T x <- xs]), "axis=" <> show (s
   where batchShape :: SShape batchShape
         batchShape = shapeSing
 
+transpose :: forall s. T (Reverse s) -> T s
+transpose = unOp "tf.transpose"
 
 --------------------
 -- "Contrib"
 
 
-matvecmul :: forall batchShape cols rows. (KnownNat cols, KnownNat rows, KnownShape batchShape) =>  Tensor (cols ': rows ': batchShape) -> Tensor (cols ': batchShape) -> Tensor (rows ': batchShape)
-matvecmul m v = squeeze0 (matmul m (expandDim0 v))
+matvecmulBatch :: forall batchShape cols rows. (KnownNat cols, KnownNat rows, KnownShape batchShape) =>  Tensor (cols ': rows ': batchShape) -> Tensor (cols ': batchShape) -> Tensor (rows ': batchShape)
+matvecmulBatch m v = squeeze0 (matmul m (expandDim0 v))
 
-(∙) :: forall batchShape cols rows. (KnownNat cols, KnownNat rows, KnownShape batchShape) =>  Tensor (cols ': rows ': batchShape) -> Tensor (cols ': batchShape) -> Tensor (rows ': batchShape)
+matvecmul :: Tensor (cols ': rows ': '[]) -> Tensor (cols ': batchSize ': '[]) -> Tensor (rows ': batchSize ': '[])
+matvecmul m v = matmul v (transpose m)
+
+(∙) :: Tensor '[cols, rows] -> Tensor '[cols,batchSize] -> Tensor '[rows,batchSize] 
 (∙) = matvecmul
 
 -- A linear function form a to b is a matrix and a bias.
 type a ⊸ b = (Tensor '[a,b], Tensor '[b])
 
 -- | Apply a linear function
-(#) :: (KnownNat a, KnownNat b) => (a ⊸ b) -> T '[a] -> Tensor '[b]
+(#) :: (a ⊸ b) -> T '[a,batchSize] -> Tensor '[b,batchSize]
 (weightMatrix, bias) # v = weightMatrix ∙ v ⊕ bias
 
 type RnnCell state input output = (state , T input) -> Gen (state , T output)
 
-lstm :: forall n x. (KnownNat x, KnownNat n) => SNat n ->
-        ((n + x) ⊸ n) -> 
+lstm :: forall n x bs. (KnownNat bs) => SNat n ->
         ((n + x) ⊸ n) ->
         ((n + x) ⊸ n) ->
         ((n + x) ⊸ n) ->
-        ((T '[ n ], T '[ n ]) , T '[ x ]) ->
-        Gen ((T '[ n ], T '[ n ]) , T '[ n ])
+        ((n + x) ⊸ n) ->
+        RnnCell (T '[n,bs], T '[n,bs]) '[x,bs] '[n,bs]
 lstm _ wf wi wc wo ((ht1 , ct1) , input) = return ((c , h) , h)
-  where  hx :: T '[ n + x ]
+  where  hx :: T '[ n + x, bs ]
          hx = concat0 ht1 input
          f = sigmoid (wf # hx)
          i = sigmoid (wi # hx)
@@ -238,8 +251,9 @@ lstm _ wf wi wc wo ((ht1 , ct1) , input) = return ((c , h) , h)
          c = (f ⊙ ct1) ⊕ (i ⊙ cTilda)
          h = o ⊕ tanh c
 
--- dense :: (n ⊸ m) -> (∀ x. T x -> T x) -> Tensor (n ': batchShape) -> Tensor (m ': batchShape)
--- dense lf activation t = activation (lf # t)
+dense :: (n ⊸ m) -> (∀ x. T x -> T x) -> Tensor '[n, batchSize] -> Tensor '[m, batchSize]
+dense lf activation t = activation (lf # t)
+
 
 -- | Stack two RNN cells
 stackLayers :: RnnCell s0 a b -> RnnCell s1 b c -> RnnCell (s0,s1) a c
@@ -261,7 +275,7 @@ timeDistribute :: (Tensor (a ': batchShape) -> Tensor (b ': batchShape)) -> RnnC
 timeDistribute pureLayer (s,a) = return (s, pureLayer a)
 
 -- | Build a RNN by repeating a cell @n@ times.
-rnn :: forall state input output n.
+rnn :: forall n state input output.
        (KnownNat n, KnownShape input, KnownShape output) =>
        RnnCell state input output ->
        (state , Tensor (n ': input)) -> Gen (state , Tensor (n ': output))
