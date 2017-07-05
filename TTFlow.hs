@@ -51,7 +51,7 @@ data SShape s where
   Nil :: SShape '[]
   Cons :: SNat x -> SShape xs -> SShape (x ': xs)
 
-class KnownShape s where
+class KnownLen s => KnownShape s where
   shapeSing :: SShape s
 
 instance KnownShape '[] where
@@ -59,6 +59,16 @@ instance KnownShape '[] where
 
 instance (KnownNat x, KnownShape xs) => KnownShape (x ': xs) where
   shapeSing = Cons (SNat Proxy) shapeSing
+
+class KnownLen s where
+  shapeLen :: Integer
+
+instance KnownLen '[] where
+  shapeLen = 0
+
+instance KnownLen xs => KnownLen (x ': xs) where
+  shapeLen = 1 + shapeLen @ xs
+
 
 getShape :: ∀s. KnownShape s=> SShape s
 getShape = shapeSing
@@ -75,10 +85,7 @@ shapeToList = shapeToList' (getShape @ s)
 showShape :: forall (s :: Shape). KnownShape s => String
 showShape = show (shapeToList @ s)
 
-shapeLen :: ∀ (s::Shape). KnownShape s => Int
-shapeLen = length (shapeToList @ s)
-
-showShapeLen :: ∀ (s::Shape). KnownShape s => String
+showShapeLen :: ∀ (s::Shape). KnownLen s => String
 showShapeLen = show (shapeLen @ s)
 
 rememberNat :: SNat n -> (KnownNat n => r) -> r
@@ -139,10 +146,13 @@ unOp op (T x) = T (funcall op [x])
 --------------------------
 -- TF primitives
 
+zeros :: forall (shape :: [Nat]). KnownShape shape => (T shape)
+zeros = T (funcall "tf.zeros" [(showShape @ shape)])
+
 -- | Declare a parameter to optimize.
-parameter' :: forall (shape :: [Nat]). KnownShape shape => String -> Gen (T shape)
-parameter' name = do -- FIMXE: initialization function
-  gen (name <> " = tf.Variable(tf.zeros(" <> (showShape @ shape) <> ")) ") 
+parameter' :: forall (shape :: [Nat]). String -> T shape -> Gen (T shape)
+parameter' name (T initial) = do -- FIMXE: initialization function
+  gen (name <> " = " <> funcall "tf.Variable" [initial])
   return (T name)
 
 add_n :: ∀ d s. Tensor (d++s) -> Tensor d -> Tensor (d++s) -- note ++s for for 'broadcasting'
@@ -157,7 +167,7 @@ multiply = binOp "tf.multiply"
 (⊙) :: forall (d :: [Nat]). Tensor d -> Tensor d -> Tensor d
 (⊙) = multiply
 
-matmul :: Tensor (o ': n ': baTensorchShape) -> Tensor (m ': o ': baTensorchShape) -> Tensor (m ': n ': baTensorchShape)
+matmul :: Tensor (o ': n ': s) -> Tensor (m ': o ': s) -> Tensor (m ': n ': s)
 matmul = binOp "tf.matmul"
 
 
@@ -167,7 +177,7 @@ sigmoid = unOp "tf.sigmoid"
 tanh :: forall s. Tensor s -> Tensor s
 tanh = unOp "tf.tanh"
 
-split0 :: forall m n batchShape. (KnownNat n, KnownNat m, KnownShape batchShape) => Tensor ((n + m) ': batchShape) -> Gen (Tensor (n ': batchShape) , Tensor (m ': batchShape))
+split0 :: forall m n batchShape. (KnownNat n, KnownNat m, KnownLen batchShape) => Tensor ((n + m) ': batchShape) -> Gen (Tensor (n ': batchShape) , Tensor (m ': batchShape))
 split0 (T x) = do
   v1 <- newVar
   v2 <- newVar
@@ -190,10 +200,10 @@ expandDim0 :: forall batchShape. KnownShape batchShape => Tensor batchShape -> T
 expandDim0 = expandDim @ '[]
 
 
-squeeze :: forall s0 s1. KnownShape s1 => Tensor (s0 ++ (1 ': s1)) -> Tensor (s0 ++ s1)
+squeeze :: forall s0 s1. KnownLen s1 => Tensor (s0 ++ (1 ': s1)) -> Tensor (s0 ++ s1)
 squeeze (T x) = T (funcall "tf.squeeze" [x, "axis=" <> show (shapeLen @ s1)])
 
-squeeze0 :: forall batchShape. KnownShape batchShape => Tensor (1 ': batchShape) -> Tensor batchShape
+squeeze0 :: forall batchShape. KnownLen batchShape => Tensor (1 ': batchShape) -> Tensor batchShape
 squeeze0 = squeeze @ '[]
 
 
@@ -210,7 +220,8 @@ stack (V xs) = T (funcall "tf.stack" [(list [x | T x <- xs]), "axis=" <> show (s
 transpose :: forall s. T (Reverse s) -> T s
 transpose = unOp "tf.transpose"
 
-
+gather :: ∀s n indexShape. T (s ++ '[n]) -> T indexShape -> T (s ++ indexShape )
+gather = binOp "tf.gather"
 
 -------------------------
 -- Generic parameters
@@ -219,7 +230,7 @@ class Parameter p where
   parameter :: String -> Gen p
 
 instance KnownShape shape => Parameter (T shape) where
-  parameter = parameter'
+  parameter s = parameter' s zeros
 
 instance (Parameter p, Parameter q) => Parameter (p,q) where
   parameter s = (,) <$> parameter (s<>".fst") <*> parameter (s<>".snd")
@@ -234,6 +245,8 @@ instance (Parameter p1, Parameter p2, Parameter p3, Parameter p4) => Parameter (
 -- "Contrib"
 
 
+----------------
+-- Helpers
 matvecmulBatch :: forall batchShape cols rows. (KnownNat cols, KnownNat rows, KnownShape batchShape) =>  Tensor (cols ': rows ': batchShape) -> Tensor (cols ': batchShape) -> Tensor (rows ': batchShape)
 matvecmulBatch m v = squeeze0 (matmul m (expandDim0 v))
 
@@ -243,6 +256,11 @@ matvecmul m v = matmul v (transpose m)
 (∙) :: Tensor '[cols, rows] -> Tensor '[cols,batchSize] -> Tensor '[rows,batchSize] 
 (∙) = matvecmul
 
+
+---------------------
+-- Linear functions
+
+
 -- A linear function form a to b is a matrix and a bias.
 type a ⊸ b = (Tensor '[a,b], Tensor '[b])
 
@@ -250,15 +268,37 @@ type a ⊸ b = (Tensor '[a,b], Tensor '[b])
 (#) :: (a ⊸ b) -> T '[a,batchSize] -> Tensor '[b,batchSize]
 (weightMatrix, bias) # v = weightMatrix ∙ v ⊕ bias
 
+-----------------------
+-- Feed-forward layers
+
+-- | embedding layer
+embedding :: ∀ embeddingSize numObjects batchSize. Tensor '[numObjects, embeddingSize] -> Tensor '[1,batchSize] -> Tensor '[embeddingSize,batchSize]
+embedding param input = gather @ '[embeddingSize] (transpose param) (squeeze0 input)
+
+dense :: (n ⊸ m) -> Tensor '[n, batchSize] -> Tensor '[m, batchSize]
+dense lf t = (lf # t)
+
+softmax0 :: T (n ': s) -> T (n ': s)
+softmax0 = unOp "tf.nn.softmax"
+
+-------------------------------
+-- RNN layers and combinators
+
 type RnnCell state input output = (state , T input) -> Gen (state , T output)
 
-lstm :: forall n x bs. (KnownNat bs) => SNat n ->
+
+-- | Any pure function (feed-forward layer) can be transformed into a
+-- cell by ignoring the RNN state.
+timeDistribute :: (Tensor (a ': batchShape) -> Tensor (b ': batchShape)) -> RnnCell () (a ': batchShape) (b ': batchShape)
+timeDistribute pureLayer (s,a) = return (s, pureLayer a)
+
+lstm :: forall n x bs. (KnownNat bs) => 
         (((n + x) ⊸ n),
          ((n + x) ⊸ n),
          ((n + x) ⊸ n),
          ((n + x) ⊸ n)) ->
         RnnCell (T '[n,bs], T '[n,bs]) '[x,bs] '[n,bs]
-lstm _ (wf,wi,wc,wo) ((ht1 , ct1) , input) = return ((c , h) , h)
+lstm (wf,wi,wc,wo) ((ht1 , ct1) , input) = return ((c , h) , h)
   where  hx :: T '[ n + x, bs ]
          hx = concat0 ht1 input
          f = sigmoid (wf # hx)
@@ -268,16 +308,16 @@ lstm _ (wf,wi,wc,wo) ((ht1 , ct1) , input) = return ((c , h) , h)
          c = (f ⊙ ct1) ⊕ (i ⊙ cTilda)
          h = o ⊕ tanh c
 
-dense :: (n ⊸ m) -> (∀ x. T x -> T x) -> Tensor '[n, batchSize] -> Tensor '[m, batchSize]
-dense lf activation t = activation (lf # t)
-
-
 -- | Stack two RNN cells
 stackLayers :: RnnCell s0 a b -> RnnCell s1 b c -> RnnCell (s0,s1) a c
 stackLayers l1 l2 ((s0,s1),x) = do
   (s0',y) <- l1 (s0,x)
   (s1',z) <- l2 (s1,y)
   return ((s0',s1'),z)
+
+infixr .--.
+(.--.) :: forall s0 (a :: [Nat]) (b :: [Nat]) s1 (c :: [Nat]). RnnCell s0 a b -> RnnCell s1 b c -> RnnCell (s0, s1) a c
+(.--.) = stackLayers
 
 -- | @addAttention attn l@ adds the attention function @attn@ to the
 -- layer @l@.  Note that @attn@ can depend in particular on a constant
@@ -287,10 +327,6 @@ stackLayers l1 l2 ((s0,s1),x) = do
 addAttention :: KnownShape batchShape => (state -> Tensor (x ': batchShape)) -> RnnCell state ((a+x) ': batchShape) (b ': batchShape) -> RnnCell state (a ': batchShape) (b ': batchShape)
 addAttention attn l (s,a) = l (s,concat0 a (attn s))
 
--- | Any pure function (layer) can be transformed into a cell by
--- ignoring the RNN state.
-timeDistribute :: (Tensor (a ': batchShape) -> Tensor (b ': batchShape)) -> RnnCell () (a ': batchShape) (b ': batchShape)
-timeDistribute pureLayer (s,a) = return (s, pureLayer a)
 
 -- | Build a RNN by repeating a cell @n@ times.
 rnn :: forall n state input output.
@@ -309,4 +345,24 @@ chain f (s0 , V (x:xs)) = do
   (s1,x') <- f (s0 , x)
   (sFin,V xs') <- chain f (s1 , V xs)
   return (sFin,V (x':xs'))
+
+
+
+
+example1 :: KnownNat batchSize => Tensor '[20,1,batchSize] -> Gen (Tensor '[20,150,batchSize])
+example1 input = do
+  (embs,lstm1,lstm2,w) <- parameter "params"
+  (_sFi,out) <- rnn (timeDistribute (embedding @ 50 @ 100000 embs)
+                     .--.
+                     (lstm @ 150 lstm1)
+                     .--.
+                     (lstm @ 150 lstm2)
+                     .--.
+                     timeDistribute (softmax0 . dense  w))
+                (() |> (zeros,zeros) |> (zeros,zeros) |> (),input)
+  return out
+
+(|>) :: forall a b. a -> b -> (a, b)
+(|>) = (,)
+infixr |>
 
