@@ -21,6 +21,7 @@ module TTFlow.Layers where
 
 import Prelude hiding (tanh,Num(..),Floating(..))
 import GHC.TypeLits
+import Text.PrettyPrint.Compact (text)
 
 import TTFlow.TF
 import TTFlow.Types
@@ -58,6 +59,12 @@ embedding param input = gather @ '[embeddingSize] (transpose param) (squeeze0 in
 
 dense :: (n ⊸ m) -> Tensor '[n, batchSize] 'Float32 -> Tensor '[m, batchSize] 'Float32
 dense lf t = (lf # t)
+
+convolutionNWC :: forall outputChannels inChannels inputSpatialShape batchSize t.
+                  T ('[inChannels] ++ inputSpatialShape ++ '[batchSize]) t ->
+                  T ('[outputChannels,inChannels] ++ inputSpatialShape) t ->
+                  T ('[outputChannels] ++ inputSpatialShape ++ '[batchSize]) t
+convolutionNWC (T input) (T filter) = T (funcall "tf.convolution" [input,filter,named "data_format" (text "NWC")])
 
 softmax0 :: T (n ': s) 'Float32 -> T (n ': s) 'Float32
 softmax0 = unOp "tf.nn.softmax"
