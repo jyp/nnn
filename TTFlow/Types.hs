@@ -1,3 +1,5 @@
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# OPTIONS_GHC -fplugin GHC.TypeLits.KnownNat.Solver #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
@@ -20,12 +22,12 @@
 
 module TTFlow.Types where
 
-import Prelude hiding (tanh,Num(..),Floating(..))
-import qualified Prelude
 import Text.PrettyPrint.Compact hiding (Last)
 import GHC.TypeLits
 import Data.Proxy
-import Control.Monad (ap)
+import Control.Monad.State
+
+type DOC = Doc ()
 
 type family (++) xs ys where
    '[] ++  xs       = xs
@@ -53,8 +55,7 @@ instance Show Typ where
 
 type Shape = [Nat]
 
-data T (shape :: Shape) (t :: Typ) where
-  T :: Doc -> T shape t
+data T (shape :: Shape) (t :: Typ) = T {fromTensor :: DOC}
 
 data SNat (n :: Nat) where
   SNat :: KnownNat n => Proxy n -> SNat n
@@ -80,7 +81,7 @@ instance KnownTyp 'Float32 where
 instance KnownTyp 'Int32 where
   typVal = Int32
 
-showTyp :: ∀ t. KnownTyp t => Doc
+showTyp :: ∀ t. KnownTyp t => DOC
 showTyp = text (show (typVal @t))
 
 
@@ -104,41 +105,48 @@ shapeToList' (Cons (SNat x) xs) = natVal x : shapeToList' xs
 shapeToList :: ∀(s::Shape). KnownShape s => [Integer]
 shapeToList = shapeToList' (getShape @ s)
 
-showShape :: ∀ (s :: Shape). KnownShape s => Doc
+showShape :: ∀ (s :: Shape). KnownShape s => DOC
 showShape = list (map showDim' (reverse (shapeToList @ s)))
 
-showShapeLen :: ∀ (s::Shape). KnownLen s => Doc
+showShapeLen :: ∀ (s::Shape). KnownLen s => DOC
 showShapeLen = (text . show) (shapeLen @ s)
 
 rememberNat :: SNat n -> (KnownNat n => r) -> r
 rememberNat (SNat _) k = k
 
-showDim' :: Integer -> Doc
+showDim' :: Integer -> DOC
 showDim' n = text (if n == -1 then "None" else show n)
 
-showDim :: forall n. KnownNat n => Doc
+showDim :: forall n. KnownNat n => DOC
 showDim = showDim' (natVal (Proxy @ n))
 
 --------------------------------
 -- Generation Effects
 
-type Effect = Integer -> [Doc]
+data GState = GState {nextVar :: Integer,
+                      genText :: DOC}
+newtype Gen x = Gen {fromGen :: State GState x} deriving (Monad, MonadState GState, Functor, Applicative)
 
-newtype Gen x = Gen {fromGen ::  (x -> Effect) -> Effect} deriving (Functor)
+newVar :: Gen DOC
+newVar = do
+  n <- gets nextVar
+  modify $ \GState{..} -> GState {nextVar=nextVar+1,..}
+  return (text "var" <> integer n)
 
-instance Applicative Gen where
-  pure = return
-  (<*>) = ap
+gen :: DOC -> Gen ()
+gen s = modify $ \GState{..} -> GState {genText=genText $$ s,..}
 
-instance Monad Gen where
-  return x = Gen $ \k -> k x
-  Gen m >>= f = Gen $ \k -> m $ \a -> fromGen (f a) $ \b -> k b
+setGen :: DOC -> Gen ()
+setGen d = modify $ \GState{..} -> GState {genText=d,..}
 
-newVar :: Gen Doc
-newVar = Gen $ \ k n -> k (text "var" <> integer n) (1 Prelude.+ n)
-
-gen :: Doc -> Gen ()
-gen s = Gen $ \ k n -> s : k () n
+withDOC :: forall a. (DOC -> DOC) -> Gen a -> Gen a
+withDOC f g = do
+  before <- gets genText
+  setGen mempty
+  x <- g
+  after <- gets genText
+  setGen (before $$ f after)
+  return x
 
 type Tensor shape = T shape
 
@@ -146,11 +154,14 @@ type Tensor shape = T shape
 -- Generation helpers
 
 
-(<--) :: ∀ (s :: Shape) t. Doc -> T s t -> Gen ()
-x <-- T y = gen (x <> text " = " <> y)
+(<--) :: ∀ (s :: Shape) t. DOC -> T s t -> Gen ()
+x <-- T y = gen (hang 2 (x <> text " =")  y)
 
-funcall :: String -> [Doc] -> Doc
-funcall f args = text f <> parens (sep (punctuate comma args))
+tuple :: [DOC] -> DOC
+tuple = parens . sep . punctuate comma
+
+funcall :: String -> [DOC] -> DOC
+funcall f args = text f <> tuple args
 
 binOp :: ∀ s1 s2 s3 t1 t2 t3. String -> Tensor s1 t1 -> Tensor s2 t2 -> Tensor s3 t3
 binOp op (T x) (T y) = T (funcall op [ x , y])
@@ -163,6 +174,16 @@ assign x = do
   v <- newVar
   v <-- x
   return (T v)
+
+genFun :: forall b. String -> [DOC] -> Gen b -> Gen b
+genFun name args body = do
+  gen (text "def " <> text name <> tuple args <> text ":")
+  withDOC (\b -> text "  " <> b) body
+
+
+generate :: Gen () -> String
+generate s = renderWith (Options 92 (const id)) (genText (execState (fromGen s) (GState {nextVar = 0, genText = mempty})))
+
 
 -- Local Variables:
 -- dante-project-root: ".."

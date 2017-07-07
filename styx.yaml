@@ -1,6 +1,9 @@
 nix-deps:
     - ghc-typelits-knownnat
-    - pretty-compact
+
+source-deps:
+  pretty-compact:
+    location: https://github.com/jyp/prettiest.git
 
 
 

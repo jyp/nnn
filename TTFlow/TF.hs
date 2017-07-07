@@ -32,13 +32,14 @@ zeros = T (funcall "tf.zeros" [(showShape @ shape)])
 
 -- | Declare a parameter to optimize.
 parameter' :: ∀ (shape :: Shape) t. String -> T shape t -> Gen (T shape t)
-parameter' name (T initial) = do -- FIMXE: initialization function
+parameter' name (T initial) = do
   v <- newVar
-  v <-- T (funcall "tf.Variable" [initial, text "name=" <> text name])
+  v <-- T (funcall "tf.Variable" [initial, text "name=" <> string (show (name))])
   return (T v)
 
-placeholder :: ∀t s. (KnownShape s, KnownTyp t) => Doc -> Gen (T s t)
-placeholder name = do
+placeholder :: ∀t s. (KnownShape s, KnownTyp t) => String -> Gen (T s t)
+placeholder n = do
+  let name = text n
   name <-- T (funcall "tf.placeholder" [showTyp @t, text "shape=" <> showShape @ s])
   return (T name)
 
@@ -59,7 +60,7 @@ reduceSum0 :: ∀ s' n. KnownLen s' => Tensor (n ': s') 'Float32 -> Tensor s' 'F
 reduceSum0 = reduceSum @'[]
 
 add :: ∀ d s t. Tensor (d++s) t -> Tensor d t -> Tensor (d++s) t -- note ++s for for 'broadcasting'
-add = binOp "tf.add_n"
+add = binOp "tf.add"
 
 add_n :: ∀ s t. [Tensor s t] -> Tensor s t
 add_n = error "add_n not implemented"
@@ -80,7 +81,7 @@ matmul = binOp "tf.matmul"
 sigmoid, tanh, log :: ∀ s. Tensor s 'Float32 -> Tensor s 'Float32
 sigmoid = unOp "tf.sigmoid"
 tanh = unOp "tf.tanh"
-log = unOp "tf.tanh"
+log = unOp "tf.log"
 
 split0 :: ∀ m n batchShape t. (KnownNat n, KnownNat m, KnownLen batchShape) =>
           Tensor ((n + m) ': batchShape) t -> Gen (Tensor (n ': batchShape) t, Tensor (m ': batchShape) t)

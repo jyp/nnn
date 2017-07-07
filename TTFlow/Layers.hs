@@ -33,7 +33,7 @@ matvecmulBatch m v = squeeze0 (matmul m (expandDim0 v))
 matvecmul :: Tensor (cols ': rows ': '[]) t -> Tensor (cols ': batchSize ': '[]) t -> Tensor (rows ': batchSize ': '[]) t
 matvecmul m v = matmul v (transpose m)
 
-(∙) :: Tensor '[cols, rows] t -> Tensor '[cols,batchSize] t -> Tensor '[rows,batchSize] t 
+(∙) :: Tensor '[cols, rows] t -> Tensor '[cols,batchSize] t -> Tensor '[rows,batchSize] t
 (∙) = matvecmul
 
 
@@ -52,7 +52,8 @@ type (a ⊸ b) = (Tensor '[a,b] 'Float32, Tensor '[b] 'Float32)
 -- Feed-forward layers
 
 -- | embedding layer
-embedding :: ∀ embeddingSize numObjects batchSize t. Tensor '[numObjects, embeddingSize] t -> Tensor '[1,batchSize] 'Int32 -> Tensor '[embeddingSize,batchSize] t
+embedding :: ∀ embeddingSize numObjects batchSize t.
+             Tensor '[numObjects, embeddingSize] t -> Tensor '[1,batchSize] 'Int32 -> Tensor '[embeddingSize,batchSize] t
 embedding param input = gather @ '[embeddingSize] (transpose param) (squeeze0 input)
 
 dense :: (n ⊸ m) -> Tensor '[n, batchSize] 'Float32 -> Tensor '[m, batchSize] 'Float32
@@ -60,17 +61,6 @@ dense lf t = (lf # t)
 
 softmax0 :: T (n ': s) 'Float32 -> T (n ': s) 'Float32
 softmax0 = unOp "tf.nn.softmax"
-
--------------------------------
--- Loss functions
-
--- type Loss s bs = Tensor (s++'[bs]) -> Tensor (s++'[bs]) -> Tensor '[bs]
-type Loss s bs t = Last s ~ bs => Tensor s t -> Tensor s t -> Tensor '[bs] 'Float32
-
-
-crossEntropy :: Tensor '[n,bs] 'Float32 -> Tensor '[n,bs] 'Float32 -> Tensor '[bs] 'Float32
-crossEntropy y_ y = negate (reduceSum0 (y_ ⊙ log y))
-
 
 -------------------------------
 -- RNN layers and combinators
@@ -93,26 +83,25 @@ lstm :: ∀ n x bs. (KnownNat bs) =>
          ((n + x) ⊸ n)) ->
         RnnCell (T '[n,bs] 'Float32, T '[n,bs] 'Float32) (Tensor '[x,bs] 'Float32) (Tensor '[n,bs] 'Float32)
 lstm (wf,wi,wc,wo) ((ht1 , ct1) , input) = do
+  hx <- assign (concat0 ht1 input)
+  let f = sigmoid (wf # hx)
+      i = sigmoid (wi # hx)
+      cTilda = tanh (wc # hx)
+      o = sigmoid (wo # hx)
   c <- assign ((f ⊙ ct1) ⊕ (i ⊙ cTilda))
   h <- assign (o ⊕ tanh c)
   return ((c , h) , h)
-  where  hx :: T '[ n + x, bs ] 'Float32
-         hx = concat0 ht1 input
-         f = sigmoid (wf # hx)
-         i = sigmoid (wi # hx)
-         cTilda = tanh (wc # hx)
-         o = sigmoid (wo # hx)
 
 -- | Stack two RNN cells
-stackLayers :: RnnCell s0 a b -> RnnCell s1 b c -> RnnCell (s0,s1) a c
-stackLayers l1 l2 ((s0,s1),x) = do
+stackRnnLayers :: RnnCell s0 a b -> RnnCell s1 b c -> RnnCell (s0,s1) a c
+stackRnnLayers l1 l2 ((s0,s1),x) = do
   (s0',y) <- l1 (s0,x)
   (s1',z) <- l2 (s1,y)
   return ((s0',s1'),z)
 
 infixr .--.
 (.--.) :: forall s0 a b s1 c. RnnCell s0 a b -> RnnCell s1 b c -> RnnCell (s0, s1) a c
-(.--.) = stackLayers
+(.--.) = stackRnnLayers
 
 -- | @addAttention attn l@ adds the attention function @attn@ to the
 -- layer @l@.  Note that @attn@ can depend in particular on a constant
