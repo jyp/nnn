@@ -184,7 +184,8 @@ genFun name args body = do
 generate :: Gen () -> String
 generate s = renderWith (Options 92 (const id)) (genText (execState (fromGen s) (GState {nextVar = 0, genText = mempty})))
 
-
+named :: String -> DOC -> DOC
+named fname x = text (fname <> "=") <> x
 -- Local Variables:
 -- dante-project-root: ".."
 -- End:

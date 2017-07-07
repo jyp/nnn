@@ -12,11 +12,11 @@ import TTFlow
 example1 :: KnownNat batchSize => Tensor '[20,1,batchSize] 'Int32 -> Gen (Tensor '[20,batchSize] 'Float32)
 example1 input = do
   (embs,lstm1,lstm2,w) <- parameter "params"
-  (_sFi,out) <- rnn (timeDistribute (embedding @ 50 @ 100000 embs)
+  (_sFi,out) <- rnn (timeDistribute (embedding @50 @100000 embs)
                      .--.
-                     (lstm @ 150 lstm1)
+                     (lstm @150 lstm1)
                      .--.
-                     (lstm @ 150 lstm2)
+                     (lstm @150 lstm2)
                      .--.
                      timeDistribute (sigmoid . squeeze0 . dense  w))
                 (() |> (zeros,zeros) |> (zeros,zeros) |> (),input)
@@ -28,7 +28,7 @@ infixr |>
 
 
 main :: IO ()
-main = writeFile "ttflow.py" (generate $ compile @1024 example1 crossEntropy)
+main = writeFile "ttflow_example.py" (generate $ compile @1024 example1 crossEntropy)
 
 
 
