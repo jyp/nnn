@@ -155,7 +155,7 @@ type Tensor shape = T shape
 
 
 (<--) :: ∀ (s :: Shape) t. DOC -> T s t -> Gen ()
-x <-- T y = gen (hang 2 (x <> text " =")  y)
+x <-- T y = gen (x <> text "=" <>  y)
 
 tuple :: [DOC] -> DOC
 tuple = parens . sep . punctuate comma

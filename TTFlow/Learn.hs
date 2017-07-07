@@ -49,13 +49,15 @@ type Batch s batchSize = Tensor (s++'[batchSize])
 
 compile :: ∀ bs s (s'::Shape) t u. (Last s'~bs, KnownShape s, KnownShape s',KnownTyp t, KnownTyp u) =>
           (Tensor s t -> Gen (Tensor s' u)) -> Loss s' bs u -> Gen ()
-compile model lossFunction = genFun "mkModel" [] $ do
-  x <- placeholder "x"
-  y_ <- placeholder "y_"
-  y <- assign =<< model x
-  loss <- assign (reduceMeanAll (lossFunction y y_))
-  gen (text "return " <> tuple [fromTensor x,fromTensor y,fromTensor y_,fromTensor loss])
-  return ()
+compile model lossFunction = do
+  gen (text "import tensorflow as tf")
+  genFun "mkModel" [] $ do
+    x <- placeholder "x"
+    y_ <- placeholder "y_"
+    y <- assign =<< model x
+    loss <- assign (reduceMeanAll (lossFunction y y_))
+    gen (text "return " <> tuple [fromTensor x,fromTensor y,fromTensor y_,fromTensor loss])
+    return ()
 
 
 
