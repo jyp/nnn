@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
@@ -17,19 +18,28 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE DataKinds #-}
 
-import Prelude hiding (tanh)
+import Prelude hiding (tanh,Num(..),Floating(..))
+import qualified Prelude
 
 import Data.List (intercalate)
 import GHC.TypeLits
 -- import GHC.TypeLits.KnownNat
 import Data.Proxy
-import Data.Monoid
+import Data.Monoid hiding (Last)
 import Control.Monad (ap)
 ------------------
 -- TYPES 
 type family (++) xs ys where
    '[] ++  xs       = xs
    (x ': xs) ++ ys       = x ': (xs ++ ys)
+
+-- type family (\\) xs y where
+--    '[x] \\ x = '[]
+--    (x ': xs) \\ y = x ': (xs \\ y)
+
+type family Last xs where
+  Last '[x] = x
+  Last (x ': xs) = Last xs
 
 type family Reverse' xs ys where
   Reverse' '[] ys = ys
@@ -68,7 +78,7 @@ instance KnownLen '[] where
   shapeLen = 0
 
 instance KnownLen xs => KnownLen (x ': xs) where
-  shapeLen = 1 + shapeLen @ xs
+  shapeLen = 1 Prelude.+ shapeLen @ xs
 
 
 getShape :: ∀s. KnownShape s=> SShape s
@@ -82,7 +92,7 @@ shapeToList :: ∀(s::Shape). KnownShape s => [Integer]
 shapeToList = shapeToList' (getShape @ s)
 
 showShape :: forall (s :: Shape). KnownShape s => String
-showShape = show (reverse (shapeToList @ s))
+showShape = list (map showDim (reverse (shapeToList @ s)))
 
 showShapeLen :: ∀ (s::Shape). KnownLen s => String
 showShapeLen = show (shapeLen @ s)
@@ -90,10 +100,8 @@ showShapeLen = show (shapeLen @ s)
 rememberNat :: SNat n -> (KnownNat n => r) -> r
 rememberNat (SNat _) k = k
 
-
-showNat :: ∀(n::Nat). KnownNat n => String
-showNat = show (natVal (Proxy @ n))
-
+showDim :: Integer -> String
+showDim n = if n == -1 then "None" else show n
 --------------------------------
 -- Generation Effects
 
@@ -110,7 +118,7 @@ instance Monad Gen where
   Gen m >>= f = Gen $ \k -> m $ \a -> fromGen (f a) $ \b -> k b
 
 newVar :: Gen String
-newVar = Gen $ \ k n -> k ("var" <> show n) (1 + n)
+newVar = Gen $ \ k n -> k ("var" <> show n) (1 Prelude.+ n)
 
 gen :: String -> Gen ()
 gen s = Gen $ \ k n -> s : k () n
@@ -132,8 +140,8 @@ commas = intercalate ", "
 list :: [String] -> String
 list = brackets . commas
 
-(<--) :: [Char] -> [Char] -> [Char]
-x <-- y = x <> " = " <> y
+(<--) :: forall (t :: [Nat]). [Char] -> T t -> Gen ()
+x <-- T y = gen (x <> " = " <> y)
 
 funcall :: String -> [String] -> String
 funcall f args = f <> (parens (commas args))
@@ -145,9 +153,9 @@ unOp :: forall s1 s2. String -> Tensor s1 -> Tensor s2
 unOp op (T x) = T (funcall op [x])
 
 assign :: ∀s. (T s) -> Gen (T s)
-assign (T x) = do
+assign x = do
   v <- newVar
-  gen (v <-- x)
+  v <-- x
   return (T v)
 
 
@@ -157,11 +165,12 @@ assign (T x) = do
 zeros :: forall (shape :: [Nat]). KnownShape shape => (T shape)
 zeros = T (funcall "tf.zeros" [(showShape @ shape)])
 
+
 -- | Declare a parameter to optimize.
 parameter' :: forall (shape :: [Nat]). String -> T shape -> Gen (T shape)
 parameter' name (T initial) = do -- FIMXE: initialization function
   v <- newVar
-  gen (v <-- funcall "tf.Variable" [initial, "name=" <> show name])
+  v <-- T (funcall "tf.Variable" [initial, "name=" <> show name])
   return (T v)
 
 data Typ = Float32 | Int32
@@ -175,6 +184,21 @@ placeholder name typ = do
   gen (name <> " = " <> funcall "tf.placeholder" [show typ,"shape=" <> showShape @ s])
   return (T name)
 
+reduceAll :: String -> Tensor s -> Tensor '[]
+reduceAll op = unOp ("tf.reduce_" ++ op)
+
+reduceMeanAll :: forall (s :: [Nat]). Tensor s -> Tensor '[]
+reduceMeanAll = reduceAll "mean"
+
+reduce :: ∀ s s' n. KnownLen s' => String -> Tensor (s ++ (n ': s')) -> Tensor (s ++ s')
+reduce op (T x) = T (funcall ("tf.reduce_" ++ op) [x, "axis=" <> show (shapeLen @ s')])
+
+reduceSum, reduceMean :: ∀ s s' n. KnownLen s' => Tensor (s ++ (n ': s')) -> Tensor (s ++ s')
+reduceSum = reduce @s @s' @n "sum"
+reduceMean = reduce @s @s' @n "mean"
+
+reduceSum0 :: ∀ s' n. KnownLen s' => Tensor (n ': s') -> Tensor s'
+reduceSum0 = reduceSum @'[]
 
 add :: ∀ d s. Tensor (d++s) -> Tensor d -> Tensor (d++s) -- note ++s for for 'broadcasting'
 add = binOp "tf.add_n"
@@ -200,6 +224,9 @@ sigmoid = unOp "tf.sigmoid"
 
 tanh :: forall s. Tensor s -> Tensor s
 tanh = unOp "tf.tanh"
+
+log :: forall s. Tensor s -> Tensor s
+log = unOp "tf.tanh"
 
 split0 :: forall m n batchShape. (KnownNat n, KnownNat m, KnownLen batchShape) => Tensor ((n + m) ': batchShape) -> Gen (Tensor (n ': batchShape) , Tensor (m ': batchShape))
 split0 (T x) = do
@@ -235,7 +262,7 @@ unstack :: forall batchShape (n::Nat). (KnownShape batchShape, KnownNat n) => Te
 unstack (T x) = do
   v <- newVar
   gen (v <> " = " <> funcall "tf.unstack" [x, "axis=" <> show (shapeLen @ batchShape)] )
-  return $ V $ [ T $ v <> brackets (show i)| i <- [0..n-1] ]
+  return $ V $ [ T $ v <> brackets (show i)| i <- [0..n Prelude.- 1] ]
         where n = natVal (Proxy @ n)
 
 stack :: forall batchShape (n::Nat). (KnownShape batchShape) => V n (T batchShape) -> Tensor (n ': batchShape) 
@@ -246,6 +273,9 @@ transpose = unOp "tf.transpose"
 
 gather :: ∀s n indexShape. T (s ++ '[n]) -> T indexShape -> T (s ++ indexShape)
 gather = binOp "tf.gather"
+
+negate :: forall s. T s -> T s
+negate = unOp "-"
 
 -------------------------
 -- Generic parameters
@@ -302,8 +332,19 @@ embedding param input = gather @ '[embeddingSize] (transpose param) (squeeze0 in
 dense :: (n ⊸ m) -> Tensor '[n, batchSize] -> Tensor '[m, batchSize]
 dense lf t = (lf # t)
 
-softmax0 :: T (n ': s) -> T (n ': s)
+softmax0 :: T (m ': s) -> T (n ': s)
 softmax0 = unOp "tf.nn.softmax"
+
+-------------------------------
+-- Loss functions
+
+-- type Loss s bs = Tensor (s++'[bs]) -> Tensor (s++'[bs]) -> Tensor '[bs]
+type Loss s bs = Last s ~ bs => Tensor s -> Tensor s -> Tensor '[bs]
+
+
+crossEntropy :: Tensor '[n,bs] -> Tensor '[n,bs] -> Tensor '[bs]
+crossEntropy y_ y = negate (reduceSum0 (y_ ⊙ log y))
+
 
 -------------------------------
 -- RNN layers and combinators
@@ -313,7 +354,10 @@ type RnnCell state input output = (state , T input) -> Gen (state , T output)
 
 -- | Any pure function (feed-forward layer) can be transformed into a
 -- cell by ignoring the RNN state.
-timeDistribute :: (Tensor (a ': batchShape) -> Tensor (b ': batchShape)) -> RnnCell () (a ': batchShape) (b ': batchShape)
+-- timeDistribute :: (Tensor (a ': batchShape) -> Tensor (b ': batchShape)) -> RnnCell () (a ': batchShape) (b ': batchShape)
+-- timeDistribute pureLayer (s,a) = return (s, pureLayer a)
+
+timeDistribute :: (Tensor a -> Tensor b) -> RnnCell () a b
 timeDistribute pureLayer (s,a) = return (s, pureLayer a)
 
 lstm :: forall n x bs. (KnownNat bs) => 
@@ -377,7 +421,7 @@ chain f (s0 , V (x:xs)) = do
 
 
 
-example1 :: KnownNat batchSize => Tensor '[20,1,batchSize] -> Gen (Tensor '[20,150,batchSize])
+example1 :: KnownNat batchSize => Tensor '[20,1,batchSize] -> Gen (Tensor '[20,batchSize])
 example1 input = do
   (embs,lstm1,lstm2,w) <- parameter "params"
   (_sFi,out) <- rnn (timeDistribute (embedding @ 50 @ 100000 embs)
@@ -386,7 +430,7 @@ example1 input = do
                      .--.
                      (lstm @ 150 lstm2)
                      .--.
-                     timeDistribute (softmax0 . dense  w))
+                     timeDistribute (sigmoid . squeeze0 . dense  w))
                 (() |> (zeros,zeros) |> (zeros,zeros) |> (),input)
   return out
 
@@ -394,18 +438,33 @@ example1 input = do
 (|>) = (,)
 infixr |>
 
-mkModel :: KnownShape s => Typ -> (Tensor s -> Gen (Tensor s')) -> Gen ()
-mkModel typ f = do
-  x <- placeholder "x" typ
-  T y <- f x
-  gen ("y = " <> y)
+-- mkModel :: KnownShape s => Typ -> (Tensor s -> Gen (Tensor s')) -> (Tensor s' -> Tensor s' -> Tensor s') -> Gen ()
+-- mkModel inTyp model loss = do
+--   x <- placeholder "x" inTyp
+--   -- y_ <- placeholder "y_" Float32
+--   y <- model x
+--   "y" <-- y
+--   -- "loss" <--
+--   return ()
+
+type Batch s batchSize = Tensor (s++'[batchSize])
+
+
+compile' :: ∀ bs s (s'::Shape). (Last s'~bs, KnownShape s, KnownShape s') => Typ -> (Tensor s -> Gen (Tensor s')) -> Loss s' bs -> Gen ()
+compile' inTyp model lossFunction = do
+  x <- placeholder "x" inTyp
+  y_ <- placeholder "y_" Float32
+  y <- assign =<< model x
+  "y" <-- y
+  "loss" <-- reduceMeanAll (lossFunction y y_)
   return ()
+
 
 generate :: Gen () -> String
 generate s = unlines (fromGen s (\() _v0 -> []) 0)
 
 main :: IO ()
-main = putStrLn $ generate $ mkModel Int32 $ example1 @ 1024
+main = putStrLn $ generate $ compile' @1024 Int32 example1 crossEntropy
 
 {-> main
 
