@@ -1,0 +1,6 @@
+nix-deps:
+    - ghc-typelits-knownnat
+    - pretty-compact
+
+
+
