@@ -1,22 +1,21 @@
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE TypeInType #-}
-{-# LANGUAGE DeriveTraversable #-}
-{-# LANGUAGE DeriveFoldable #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -fplugin GHC.TypeLits.KnownNat.Solver #-}
-
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE UnicodeSyntax #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE MagicHash #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveFoldable #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeInType #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE UnicodeSyntax #-}
 
 import Prelude hiding (tanh,Num(..),Floating(..))
 import qualified Prelude
@@ -51,9 +50,16 @@ type family Reverse xs where
 data V (n::Nat) a = V [a]
   deriving (Functor, Foldable, Traversable)
 
+data Typ = Float32 | Int32
+
+instance Show Typ where
+  show Float32 = "tf.float32"
+  show Int32 = "tf.int32"
+
 type Shape = [Nat]
-data T (shape :: [Nat]) where
-  T :: String -> T shape
+
+data T (shape :: Shape) (t :: Typ) where
+  T :: String -> T shape t
 
 data SNat (n :: Nat) where
   SNat :: KnownNat n => Proxy n -> SNat n
@@ -70,6 +76,18 @@ instance KnownShape '[] where
 
 instance (KnownNat x, KnownShape xs) => KnownShape (x ': xs) where
   shapeSing = Cons (SNat Proxy) shapeSing
+
+class KnownTyp t where
+  typVal :: Typ
+instance KnownTyp 'Float32 where
+  typVal = Float32
+
+instance KnownTyp 'Int32 where
+  typVal = Int32
+
+showTyp :: ∀ t. KnownTyp t => String
+showTyp = show (typVal @t)
+
 
 class KnownLen s where
   shapeLen :: Integer
@@ -91,7 +109,7 @@ shapeToList' (Cons (SNat x) xs) = natVal x : shapeToList' xs
 shapeToList :: ∀(s::Shape). KnownShape s => [Integer]
 shapeToList = shapeToList' (getShape @ s)
 
-showShape :: forall (s :: Shape). KnownShape s => String
+showShape :: ∀ (s :: Shape). KnownShape s => String
 showShape = list (map showDim (reverse (shapeToList @ s)))
 
 showShapeLen :: ∀ (s::Shape). KnownLen s => String
@@ -140,19 +158,19 @@ commas = intercalate ", "
 list :: [String] -> String
 list = brackets . commas
 
-(<--) :: forall (t :: [Nat]). [Char] -> T t -> Gen ()
+(<--) :: ∀ (s :: Shape) t. [Char] -> T s t -> Gen ()
 x <-- T y = gen (x <> " = " <> y)
 
 funcall :: String -> [String] -> String
 funcall f args = f <> (parens (commas args))
 
-binOp :: forall s1 s2 s3. String -> Tensor s1 -> Tensor s2 -> Tensor s3
+binOp :: ∀ s1 s2 s3 t1 t2 t3. String -> Tensor s1 t1 -> Tensor s2 t2 -> Tensor s3 t3
 binOp op (T x) (T y) = T (funcall op [ x , y])
 
-unOp :: forall s1 s2. String -> Tensor s1 -> Tensor s2
+unOp :: ∀ s1 s2 t1 t2. String -> Tensor s1 t1 -> Tensor s2 t2
 unOp op (T x) = T (funcall op [x])
 
-assign :: ∀s. (T s) -> Gen (T s)
+assign :: ∀s t. (T s t) -> Gen (T s t)
 assign x = do
   v <- newVar
   v <-- x
@@ -162,73 +180,64 @@ assign x = do
 --------------------------
 -- TF primitives
 
-zeros :: forall (shape :: [Nat]). KnownShape shape => (T shape)
+zeros :: ∀ t (shape :: Shape). KnownShape shape => (T shape t)
 zeros = T (funcall "tf.zeros" [(showShape @ shape)])
 
 
 -- | Declare a parameter to optimize.
-parameter' :: forall (shape :: [Nat]). String -> T shape -> Gen (T shape)
+parameter' :: ∀ (shape :: Shape) t. String -> T shape t -> Gen (T shape t)
 parameter' name (T initial) = do -- FIMXE: initialization function
   v <- newVar
   v <-- T (funcall "tf.Variable" [initial, "name=" <> show name])
   return (T v)
 
-data Typ = Float32 | Int32
-
-instance Show Typ where
-  show Float32 = "tf.float32"
-  show Int32 = "tf.int32"
-
-placeholder :: ∀s. KnownShape s => String -> Typ -> Gen (T s)
-placeholder name typ = do
-  gen (name <> " = " <> funcall "tf.placeholder" [show typ,"shape=" <> showShape @ s])
+placeholder :: ∀t s. (KnownShape s, KnownTyp t) => String -> Gen (T s t)
+placeholder name = do
+  gen (name <> " = " <> funcall "tf.placeholder" [showTyp @t,"shape=" <> showShape @ s])
   return (T name)
 
-reduceAll :: String -> Tensor s -> Tensor '[]
+reduceAll :: String -> Tensor s t -> Tensor '[] t
 reduceAll op = unOp ("tf.reduce_" ++ op)
 
-reduceMeanAll :: forall (s :: [Nat]). Tensor s -> Tensor '[]
+reduceMeanAll :: ∀ (s :: Shape) t. Tensor s t -> Tensor '[] t
 reduceMeanAll = reduceAll "mean"
 
-reduce :: ∀ s s' n. KnownLen s' => String -> Tensor (s ++ (n ': s')) -> Tensor (s ++ s')
+reduce :: ∀ s s' n t. KnownLen s' => String -> Tensor (s ++ (n ': s')) t -> Tensor (s ++ s') t
 reduce op (T x) = T (funcall ("tf.reduce_" ++ op) [x, "axis=" <> show (shapeLen @ s')])
 
-reduceSum, reduceMean :: ∀ s s' n. KnownLen s' => Tensor (s ++ (n ': s')) -> Tensor (s ++ s')
+reduceSum, reduceMean :: ∀ s s' n t. KnownLen s' => Tensor (s ++ (n ': s')) t -> Tensor (s ++ s') t
 reduceSum = reduce @s @s' @n "sum"
 reduceMean = reduce @s @s' @n "mean"
 
-reduceSum0 :: ∀ s' n. KnownLen s' => Tensor (n ': s') -> Tensor s'
+reduceSum0 :: ∀ s' n. KnownLen s' => Tensor (n ': s') 'Float32 -> Tensor s' 'Float32
 reduceSum0 = reduceSum @'[]
 
-add :: ∀ d s. Tensor (d++s) -> Tensor d -> Tensor (d++s) -- note ++s for for 'broadcasting'
+add :: ∀ d s t. Tensor (d++s) t -> Tensor d t -> Tensor (d++s) t -- note ++s for for 'broadcasting'
 add = binOp "tf.add_n"
 
-add_n :: ∀ s. [Tensor s] -> Tensor s
+add_n :: ∀ s t. [Tensor s t] -> Tensor s t
 add_n = error "add_n not implemented"
 
-(⊕) :: forall (d :: [Nat]) (s :: [Nat]). Tensor (d ++ s) -> Tensor d -> Tensor (d ++ s)
+(⊕) :: ∀ (d :: Shape) (s :: Shape) t. Tensor (d ++ s) t -> Tensor d t -> Tensor (d ++ s) t
 (⊕) = add @d @s
 
-multiply :: Tensor d -> Tensor d -> Tensor d
+multiply :: Tensor d t -> Tensor d t -> Tensor d t
 multiply = binOp "tf.multiply"
 
-(⊙) :: forall (d :: [Nat]). Tensor d -> Tensor d -> Tensor d
+(⊙) :: ∀ (d :: Shape) t. Tensor d t -> Tensor d t -> Tensor d t
 (⊙) = multiply
 
-matmul :: Tensor (o ': n ': s) -> Tensor (m ': o ': s) -> Tensor (m ': n ': s)
+matmul :: Tensor (o ': n ': s) t -> Tensor (m ': o ': s) t -> Tensor (m ': n ': s) t
 matmul = binOp "tf.matmul"
 
 
-sigmoid :: forall s. Tensor s -> Tensor s
+sigmoid, tanh, log :: ∀ s. Tensor s 'Float32 -> Tensor s 'Float32
 sigmoid = unOp "tf.sigmoid"
-
-tanh :: forall s. Tensor s -> Tensor s
 tanh = unOp "tf.tanh"
-
-log :: forall s. Tensor s -> Tensor s
 log = unOp "tf.tanh"
 
-split0 :: forall m n batchShape. (KnownNat n, KnownNat m, KnownLen batchShape) => Tensor ((n + m) ': batchShape) -> Gen (Tensor (n ': batchShape) , Tensor (m ': batchShape))
+split0 :: ∀ m n batchShape t. (KnownNat n, KnownNat m, KnownLen batchShape) =>
+          Tensor ((n + m) ': batchShape) t -> Gen (Tensor (n ': batchShape) t, Tensor (m ': batchShape) t)
 split0 (T x) = do
   v1 <- newVar
   v2 <- newVar
@@ -237,44 +246,44 @@ split0 (T x) = do
   where n = natVal (Proxy @ n)
         m = natVal (Proxy @ m)
 
-concat0 :: forall ys d1 d2. (KnownShape ys) =>  T (d1 ': ys) -> T (d2 ': ys) -> T ((d1 + d2) ': ys)
+concat0 :: ∀ ys d1 d2 t. (KnownShape ys) =>  T (d1 ': ys) t -> T (d2 ': ys) t -> T ((d1 + d2) ': ys) t
 concat0 t u =
   let T x = t
       T y = u
   in (T (funcall "tf.concat" [brackets (commas [x,y]), "axis=" <> show axis]))
   where axis = shapeLen @ ys -- check
 
-expandDim :: forall s0 batchShape. KnownShape batchShape => Tensor (s0 ++ batchShape) -> Tensor (s0 ++ (1 ': batchShape))
-expandDim (T x) = (T (funcall "tf.expand_dims" [x, "axis=" <> show (shapeLen @ batchShape)]))
+expandDim :: ∀ s0 s t. KnownShape s => Tensor (s0 ++ s) t -> Tensor (s0 ++ (1 ': s)) t
+expandDim (T x) = (T (funcall "tf.expand_dims" [x, "axis=" <> show (shapeLen @ s)]))
 
-expandDim0 :: forall batchShape. KnownShape batchShape => Tensor batchShape -> Tensor ((1 ': batchShape))
+expandDim0 :: ∀ s t. KnownShape s => Tensor s t -> Tensor ((1 ': s)) t
 expandDim0 = expandDim @ '[]
 
 
-squeeze :: forall s0 s1. KnownLen s1 => Tensor (s0 ++ (1 ': s1)) -> Tensor (s0 ++ s1)
+squeeze :: ∀ s0 s1 t. KnownLen s1 => Tensor (s0 ++ (1 ': s1)) t -> Tensor (s0 ++ s1) t
 squeeze (T x) = T (funcall "tf.squeeze" [x, "axis=" <> show (shapeLen @ s1)])
 
-squeeze0 :: forall batchShape. KnownLen batchShape => Tensor (1 ': batchShape) -> Tensor batchShape
+squeeze0 :: ∀ s t. KnownLen s => Tensor (1 ': s) t -> Tensor s t
 squeeze0 = squeeze @ '[]
 
 
-unstack :: forall batchShape (n::Nat). (KnownShape batchShape, KnownNat n) => Tensor (n ': batchShape) -> Gen (V n (T batchShape))
+unstack :: ∀ s (n::Nat) t. (KnownShape s, KnownNat n) => Tensor (n ': s) t -> Gen (V n (T s t))
 unstack (T x) = do
   v <- newVar
-  gen (v <> " = " <> funcall "tf.unstack" [x, "axis=" <> show (shapeLen @ batchShape)] )
+  gen (v <> " = " <> funcall "tf.unstack" [x, "axis=" <> show (shapeLen @ s)] )
   return $ V $ [ T $ v <> brackets (show i)| i <- [0..n Prelude.- 1] ]
         where n = natVal (Proxy @ n)
 
-stack :: forall batchShape (n::Nat). (KnownShape batchShape) => V n (T batchShape) -> Tensor (n ': batchShape) 
-stack (V xs) = T (funcall "tf.stack" [(list [x | T x <- xs]), "axis=" <> show (shapeLen @ batchShape)])
+stack :: ∀ s (n::Nat) t. (KnownShape s) => V n (T s t) -> Tensor (n ': s) t
+stack (V xs) = T (funcall "tf.stack" [(list [x | T x <- xs]), "axis=" <> show (shapeLen @ s)])
 
-transpose :: forall s. T (Reverse s) -> T s
+transpose :: ∀ s t. T (Reverse s) t -> T s t
 transpose = unOp "tf.transpose"
 
-gather :: ∀s n indexShape. T (s ++ '[n]) -> T indexShape -> T (s ++ indexShape)
+gather :: ∀s n indexShape t. T (s ++ '[n]) t -> T indexShape 'Int32 -> T (s ++ indexShape) t
 gather = binOp "tf.gather"
 
-negate :: forall s. T s -> T s
+negate :: ∀ s t. T s t -> T s t
 negate = unOp "-"
 
 -------------------------
@@ -283,7 +292,7 @@ negate = unOp "-"
 class Parameter p where
   parameter :: String -> Gen p
 
-instance KnownShape shape => Parameter (T shape) where
+instance KnownShape shape => Parameter (T shape t) where
   parameter s = parameter' s zeros
 
 instance (Parameter p, Parameter q) => Parameter (p,q) where
@@ -301,13 +310,13 @@ instance (Parameter p1, Parameter p2, Parameter p3, Parameter p4) => Parameter (
 
 ----------------
 -- Helpers
-matvecmulBatch :: forall batchShape cols rows. (KnownNat cols, KnownShape batchShape) =>  Tensor (cols ': rows ': batchShape) -> Tensor (cols ': batchShape) -> Tensor (rows ': batchShape)
+matvecmulBatch :: ∀ s cols rows t. (KnownNat cols, KnownShape s) =>  Tensor (cols ': rows ': s) t -> Tensor (cols ': s) t -> Tensor (rows ': s) t
 matvecmulBatch m v = squeeze0 (matmul m (expandDim0 v))
 
-matvecmul :: Tensor (cols ': rows ': '[]) -> Tensor (cols ': batchSize ': '[]) -> Tensor (rows ': batchSize ': '[])
+matvecmul :: Tensor (cols ': rows ': '[]) t -> Tensor (cols ': batchSize ': '[]) t -> Tensor (rows ': batchSize ': '[]) t
 matvecmul m v = matmul v (transpose m)
 
-(∙) :: Tensor '[cols, rows] -> Tensor '[cols,batchSize] -> Tensor '[rows,batchSize] 
+(∙) :: Tensor '[cols, rows] t -> Tensor '[cols,batchSize] t -> Tensor '[rows,batchSize] t 
 (∙) = matvecmul
 
 
@@ -316,40 +325,40 @@ matvecmul m v = matmul v (transpose m)
 
 
 -- A linear function form a to b is a matrix and a bias.
-type a ⊸ b = (Tensor '[a,b], Tensor '[b])
+type (a ⊸ b) = (Tensor '[a,b] 'Float32, Tensor '[b] 'Float32)
 
 -- | Apply a linear function
-(#) :: (a ⊸ b) -> T '[a,batchSize] -> Tensor '[b,batchSize]
+(#) :: (a ⊸ b) -> T '[a,batchSize] 'Float32 -> Tensor '[b,batchSize] 'Float32
 (weightMatrix, bias) # v = weightMatrix ∙ v ⊕ bias
 
 -----------------------
 -- Feed-forward layers
 
 -- | embedding layer
-embedding :: ∀ embeddingSize numObjects batchSize. Tensor '[numObjects, embeddingSize] -> Tensor '[1,batchSize] -> Tensor '[embeddingSize,batchSize]
+embedding :: ∀ embeddingSize numObjects batchSize t. Tensor '[numObjects, embeddingSize] t -> Tensor '[1,batchSize] 'Int32 -> Tensor '[embeddingSize,batchSize] t
 embedding param input = gather @ '[embeddingSize] (transpose param) (squeeze0 input)
 
-dense :: (n ⊸ m) -> Tensor '[n, batchSize] -> Tensor '[m, batchSize]
+dense :: (n ⊸ m) -> Tensor '[n, batchSize] 'Float32 -> Tensor '[m, batchSize] 'Float32
 dense lf t = (lf # t)
 
-softmax0 :: T (m ': s) -> T (n ': s)
+softmax0 :: T (n ': s) 'Float32 -> T (n ': s) 'Float32
 softmax0 = unOp "tf.nn.softmax"
 
 -------------------------------
 -- Loss functions
 
 -- type Loss s bs = Tensor (s++'[bs]) -> Tensor (s++'[bs]) -> Tensor '[bs]
-type Loss s bs = Last s ~ bs => Tensor s -> Tensor s -> Tensor '[bs]
+type Loss s bs t = Last s ~ bs => Tensor s t -> Tensor s t -> Tensor '[bs] 'Float32
 
 
-crossEntropy :: Tensor '[n,bs] -> Tensor '[n,bs] -> Tensor '[bs]
+crossEntropy :: Tensor '[n,bs] 'Float32 -> Tensor '[n,bs] 'Float32 -> Tensor '[bs] 'Float32
 crossEntropy y_ y = negate (reduceSum0 (y_ ⊙ log y))
 
 
 -------------------------------
 -- RNN layers and combinators
 
-type RnnCell state input output = (state , T input) -> Gen (state , T output)
+type RnnCell state input output = (state , input) -> Gen (state , output)
 
 
 -- | Any pure function (feed-forward layer) can be transformed into a
@@ -357,20 +366,20 @@ type RnnCell state input output = (state , T input) -> Gen (state , T output)
 -- timeDistribute :: (Tensor (a ': batchShape) -> Tensor (b ': batchShape)) -> RnnCell () (a ': batchShape) (b ': batchShape)
 -- timeDistribute pureLayer (s,a) = return (s, pureLayer a)
 
-timeDistribute :: (Tensor a -> Tensor b) -> RnnCell () a b
+timeDistribute :: (Tensor a t -> Tensor b t') -> RnnCell () (T a t) (T b t')
 timeDistribute pureLayer (s,a) = return (s, pureLayer a)
 
-lstm :: forall n x bs. (KnownNat bs) => 
+lstm :: ∀ n x bs. (KnownNat bs) => 
         (((n + x) ⊸ n),
          ((n + x) ⊸ n),
          ((n + x) ⊸ n),
          ((n + x) ⊸ n)) ->
-        RnnCell (T '[n,bs], T '[n,bs]) '[x,bs] '[n,bs]
+        RnnCell (T '[n,bs] 'Float32, T '[n,bs] 'Float32) (Tensor '[x,bs] 'Float32) (Tensor '[n,bs] 'Float32)
 lstm (wf,wi,wc,wo) ((ht1 , ct1) , input) = do
   c <- assign ((f ⊙ ct1) ⊕ (i ⊙ cTilda))
   h <- assign (o ⊕ tanh c)
   return ((c , h) , h)
-  where  hx :: T '[ n + x, bs ]
+  where  hx :: T '[ n + x, bs ] 'Float32
          hx = concat0 ht1 input
          f = sigmoid (wf # hx)
          i = sigmoid (wi # hx)
@@ -385,7 +394,7 @@ stackLayers l1 l2 ((s0,s1),x) = do
   return ((s0',s1'),z)
 
 infixr .--.
-(.--.) :: forall s0 (a :: [Nat]) (b :: [Nat]) s1 (c :: [Nat]). RnnCell s0 a b -> RnnCell s1 b c -> RnnCell (s0, s1) a c
+(.--.) :: forall s0 a b s1 c. RnnCell s0 a b -> RnnCell s1 b c -> RnnCell (s0, s1) a c
 (.--.) = stackLayers
 
 -- | @addAttention attn l@ adds the attention function @attn@ to the
@@ -393,15 +402,15 @@ infixr .--.
 -- external value @h@ which is the complete input to pay attention to.
 -- The type parameter @x@ is the size of the portion of @h@ that the
 -- layer @l@ will observe.
-addAttention :: KnownShape batchShape => (state -> Tensor (x ': batchShape)) -> RnnCell state ((a+x) ': batchShape) (b ': batchShape) -> RnnCell state (a ': batchShape) (b ': batchShape)
+addAttention :: KnownShape s => (state -> T (x ': s) t) -> RnnCell state (T ((a+x) ': s) t) (T (b ': s) t) -> RnnCell state (T (a ': s) t) (T (b ': s) t)
 addAttention attn l (s,a) = l (s,concat0 a (attn s))
 
 
 -- | Build a RNN by repeating a cell @n@ times.
-rnn :: forall n state input output.
+rnn :: ∀ n state input output t u.
        (KnownNat n, KnownShape input, KnownShape output) =>
-       RnnCell state input output ->
-       (state , Tensor (n ': input)) -> Gen (state , Tensor (n ': output))
+       RnnCell state (T input t) (T output u) ->
+       (state , Tensor (n ': input) t) -> Gen (state , Tensor (n ': output) u)
 rnn cell (s0, t) = do
   xs <- unstack t
   (sFin,us) <- chain cell (s0,xs)
@@ -411,7 +420,7 @@ rnn cell (s0, t) = do
 -- tf.foldl
 
 -- | RNN helper
-chain :: forall state a b n. ((state , a) -> Gen (state , b)) → (state , V n a) -> Gen (state , V n b)
+chain :: ∀ state a b n. ((state , a) -> Gen (state , b)) → (state , V n a) -> Gen (state , V n b)
 chain _ (s0 , V []) = return (s0 , V [])
 chain f (s0 , V (x:xs)) = do
   (s1,x') <- f (s0 , x)
@@ -421,7 +430,7 @@ chain f (s0 , V (x:xs)) = do
 
 
 
-example1 :: KnownNat batchSize => Tensor '[20,1,batchSize] -> Gen (Tensor '[20,batchSize])
+example1 :: KnownNat batchSize => Tensor '[20,1,batchSize] 'Int32 -> Gen (Tensor '[20,batchSize] 'Float32)
 example1 input = do
   (embs,lstm1,lstm2,w) <- parameter "params"
   (_sFi,out) <- rnn (timeDistribute (embedding @ 50 @ 100000 embs)
@@ -434,26 +443,18 @@ example1 input = do
                 (() |> (zeros,zeros) |> (zeros,zeros) |> (),input)
   return out
 
-(|>) :: forall a b. a -> b -> (a, b)
+(|>) :: ∀ a b. a -> b -> (a, b)
 (|>) = (,)
 infixr |>
-
--- mkModel :: KnownShape s => Typ -> (Tensor s -> Gen (Tensor s')) -> (Tensor s' -> Tensor s' -> Tensor s') -> Gen ()
--- mkModel inTyp model loss = do
---   x <- placeholder "x" inTyp
---   -- y_ <- placeholder "y_" Float32
---   y <- model x
---   "y" <-- y
---   -- "loss" <--
---   return ()
 
 type Batch s batchSize = Tensor (s++'[batchSize])
 
 
-compile' :: ∀ bs s (s'::Shape). (Last s'~bs, KnownShape s, KnownShape s') => Typ -> (Tensor s -> Gen (Tensor s')) -> Loss s' bs -> Gen ()
-compile' inTyp model lossFunction = do
-  x <- placeholder "x" inTyp
-  y_ <- placeholder "y_" Float32
+compile :: ∀ bs s (s'::Shape) t u. (Last s'~bs, KnownShape s, KnownShape s',KnownTyp t, KnownTyp u) =>
+          (Tensor s t -> Gen (Tensor s' u)) -> Loss s' bs u -> Gen ()
+compile model lossFunction = do
+  x <- placeholder "x"
+  y_ <- placeholder "y_"
   y <- assign =<< model x
   "y" <-- y
   "loss" <-- reduceMeanAll (lossFunction y y_)
@@ -464,7 +465,7 @@ generate :: Gen () -> String
 generate s = unlines (fromGen s (\() _v0 -> []) 0)
 
 main :: IO ()
-main = putStrLn $ generate $ compile' @1024 Int32 example1 crossEntropy
+main = putStrLn $ generate $ compile @1024 example1 crossEntropy
 
 {-> main
 
