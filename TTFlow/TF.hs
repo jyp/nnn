@@ -101,8 +101,10 @@ expandDim :: ∀ s0 s t. KnownShape s => Tensor (s0 ++ s) t -> Tensor (s0 ++ (1 
 expandDim (T x) = (T (funcall "tf.expand_dims" [x, text "axis=" <> integer (shapeLen @ s)]))
 
 expandDim0 :: ∀ s t. KnownShape s => Tensor s t -> Tensor ((1 ': s)) t
-expandDim0 = expandDim @ '[]
+expandDim0 = expandDim @'[]
 
+expandDim1 :: ∀ n s t. KnownShape s => Tensor (n ': s) t -> Tensor (n ': 1 ': s) t
+expandDim1 = expandDim @'[n]
 
 squeeze :: ∀ s0 s1 t. KnownLen s1 => Tensor (s0 ++ (1 ': s1)) t -> Tensor (s0 ++ s1) t
 squeeze (T x) = T (funcall "tf.squeeze" [x, text "axis=" <> integer (shapeLen @ s1)])
