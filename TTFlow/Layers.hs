@@ -57,17 +57,27 @@ embedding :: ∀ embeddingSize numObjects batchSize t.
              Tensor '[numObjects, embeddingSize] t -> Tensor '[1,batchSize] 'Int32 -> Tensor '[embeddingSize,batchSize] t
 embedding param input = gather @ '[embeddingSize] (transpose param) (squeeze0 input)
 
-dense :: (n ⊸ m) -> Tensor '[n, batchSize] 'Float32 -> Tensor '[m, batchSize] 'Float32
+dense :: ∀m n batchSize. (n ⊸ m) -> Tensor '[n, batchSize] 'Float32 -> Tensor '[m, batchSize] 'Float32
 dense lf t = (lf # t)
 
-convolutionNWC :: forall outputChannels inChannels inputSpatialShape batchSize t.
-                  T ('[inChannels] ++ inputSpatialShape ++ '[batchSize]) t ->
-                  T ('[outputChannels,inChannels] ++ inputSpatialShape) t ->
-                  T ('[outputChannels] ++ inputSpatialShape ++ '[batchSize]) t
-convolutionNWC (T input) (T filter) = T (funcall "tf.convolution" [input,filter,named "data_format" (text "NWC")])
 
-softmax0 :: T (n ': s) 'Float32 -> T (n ': s) 'Float32
-softmax0 = unOp "tf.nn.softmax"
+------------------------
+-- Convolutional layers
+
+conv :: forall outputChannels filterSpatialShape inChannels s t.
+                  ((1 + Length filterSpatialShape) ~ Length s,
+                   KnownShape s) => -- the last dim of s is the batch size
+                  (T ('[outputChannels,inChannels] ++ filterSpatialShape) t, T ('[outputChannels] ++ Init s) t) ->
+                  T ('[inChannels] ++ s) t ->
+                  T ('[outputChannels] ++ s) t
+conv (filters,bias) input = initLast @s (add @'[Last s] c  bias)
+ where c = (convolutionNWC' input filters)
+
+
+maxPool2D :: forall stridex (stridey::Nat) batch height width channels.
+             (KnownNat stridex, KnownNat stridey) =>
+             T '[channels,width*stridex,height*stridex,batch] 'Float32 -> T '[channels,width,height,batch] 'Float32
+maxPool2D (T value) = T (funcall "tf.nn.max_pool" [value, showShape @'[1,stridex,stridey,1], showShape @'[1,stridex,stridey,1] ])
 
 -------------------------------
 -- RNN layers and combinators

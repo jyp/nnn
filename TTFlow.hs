@@ -3,7 +3,7 @@ module TTFlow (module TTFlow.TF,
                module TTFlow.Types,
                module  TTFlow.Layers,
                module  TTFlow.Learn,
-               KnownNat) where
+               module GHC.TypeLits) where
 
 import TTFlow.TF
 import TTFlow.Types

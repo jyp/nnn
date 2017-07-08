@@ -26,7 +26,7 @@ import Text.PrettyPrint.Compact hiding (Last)
 import GHC.TypeLits
 import Data.Proxy
 import Control.Monad.State
-
+import GHC.Prim (unsafeCoerce#)
 type DOC = Doc ()
 
 type family (++) xs ys where
@@ -37,6 +37,24 @@ type family Last xs where
   Last '[x] = x
   Last (x ': xs) = Last xs
 
+type family Init xs where
+  Init '[x] = '[]
+  Init (x ': xs) = x ': Init xs
+
+-- initLast' :: forall s k. ((Init s ++ '[Last s]) ~ s => k) -> k
+-- initLast' k = unsafeCoerce# k -- why not?
+
+initLast' :: forall s k. SShape s -> ((Init s ++ '[Last s]) ~ s => k) -> k
+initLast' (Cons _ Nil) k = k
+initLast' (Cons _ (Cons y ys)) k = initLast' (Cons y ys) (k)
+
+initLast :: forall s k. KnownShape s => ((Init s ++ '[Last s]) ~ s => k) -> k
+initLast = initLast' @s shapeSing
+
+type family Length xs where
+  Length '[] = 0
+  Length (x ': xs) = 1 + Length xs
+
 type family Reverse' xs ys where
   Reverse' '[] ys = ys
   Reverse' (x ': xs) ys = Reverse' xs (x ': ys )
@@ -46,6 +64,41 @@ type family Reverse xs where
 
 data V (n::Nat) a = V [a]
   deriving (Functor, Foldable, Traversable)
+
+data V' (n::Nat) a where
+  VZ :: V' 0 a
+  VS :: a -> V' n a -> V' (1+n) a
+
+data Peano = Zero | Succ Peano
+
+type Dim0 = 'Zero
+type Dim1 = 'Succ Dim0
+type Dim2 = 'Succ Dim1
+
+data SPeano n where
+  SZero :: SPeano zero
+  SSucc :: SPeano n -> SPeano ('Succ n)
+
+data Vec (n::Peano) a where
+  VNil  :: Vec 'Zero a
+  VCons :: a -> Vec n a -> Vec ('Succ n) a
+
+vecToList :: Vec n a -> [a]
+vecToList VNil = []
+vecToList (VCons x xs) = x : vecToList xs
+
+type family App n (xs :: Vec n a) ys where
+   App 'Zero 'VNil  xs            =  xs
+   App ('Succ n) ('VCons x xs) ys =  x ': App n xs ys
+
+type family Take n xs where
+   Take 'Zero xs            =  '[]
+   Take ('Succ n) (x ': xs) =  x ': Take n xs
+
+type family Drop n xs where
+   Drop 'Zero xs            =  xs
+   Drop ('Succ n) (x ': xs) =  Drop n xs
+
 
 data Typ = Float32 | Int32
 

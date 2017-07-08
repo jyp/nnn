@@ -59,14 +59,14 @@ reduceMean = reduce @s @s' @n "mean"
 reduceSum0 :: ∀ s' n. KnownLen s' => Tensor (n ': s') 'Float32 -> Tensor s' 'Float32
 reduceSum0 = reduceSum @'[]
 
-add :: ∀ d s t. Tensor (d++s) t -> Tensor d t -> Tensor (d++s) t -- note ++s for for 'broadcasting'
+add :: ∀ s d t. Tensor (d++s) t -> Tensor d t -> Tensor (d++s) t -- note ++s for for 'broadcasting'
 add = binOp "tf.add"
 
 add_n :: ∀ s t. [Tensor s t] -> Tensor s t
 add_n = error "add_n not implemented"
 
 (⊕) :: ∀ (d :: Shape) (s :: Shape) t. Tensor (d ++ s) t -> Tensor d t -> Tensor (d ++ s) t
-(⊕) = add @d @s
+(⊕) = add @s @d
 
 multiply :: Tensor d t -> Tensor d t -> Tensor d t
 multiply = binOp "tf.multiply"
@@ -78,10 +78,11 @@ matmul :: Tensor (o ': n ': s) t -> Tensor (m ': o ': s) t -> Tensor (m ': n ': 
 matmul = binOp "tf.matmul"
 
 
-sigmoid, tanh, log :: ∀ s. Tensor s 'Float32 -> Tensor s 'Float32
+sigmoid, tanh, log, relu :: ∀ s. Tensor s 'Float32 -> Tensor s 'Float32
 sigmoid = unOp "tf.sigmoid"
 tanh = unOp "tf.tanh"
 log = unOp "tf.log"
+relu = unOp "tf.nn.relu"
 
 split0 :: ∀ m n batchShape t. (KnownNat n, KnownNat m, KnownLen batchShape) =>
           Tensor ((n + m) ': batchShape) t -> Gen (Tensor (n ': batchShape) t, Tensor (m ': batchShape) t)
@@ -97,14 +98,17 @@ concat0 t u =
       T y = u
   in (T (funcall "tf.concat" [list [x,y], text "axis=" <> integer (shapeLen @ ys)]))
 
-expandDim :: ∀ s0 s t. KnownShape s => Tensor (s0 ++ s) t -> Tensor (s0 ++ (1 ': s)) t
+expandDim :: ∀ s0 s t. KnownLen s => Tensor (s0 ++ s) t -> Tensor (s0 ++ (1 ': s)) t
 expandDim (T x) = (T (funcall "tf.expand_dims" [x, text "axis=" <> integer (shapeLen @ s)]))
 
-expandDim0 :: ∀ s t. KnownShape s => Tensor s t -> Tensor ((1 ': s)) t
-expandDim0 = expandDim @'[]
+expandDim' :: forall n s t. KnownLen s => Tensor s t -> Tensor (Take n s ++ (1 ': Drop n s)) t
+expandDim' (T x) = (T (funcall "tf.expand_dims" [x, text "axis=" <> integer (shapeLen @ s)]))
+
+expandDim0 :: ∀ s t. KnownShape s => Tensor s t -> Tensor (1 ': s) t
+expandDim0 = expandDim' @Dim0
 
 expandDim1 :: ∀ n s t. KnownShape s => Tensor (n ': s) t -> Tensor (n ': 1 ': s) t
-expandDim1 = expandDim @'[n]
+expandDim1 = expandDim' @Dim1
 
 squeeze :: ∀ s0 s1 t. KnownLen s1 => Tensor (s0 ++ (1 ': s1)) t -> Tensor (s0 ++ s1) t
 squeeze (T x) = T (funcall "tf.squeeze" [x, text "axis=" <> integer (shapeLen @ s1)])
@@ -112,6 +116,8 @@ squeeze (T x) = T (funcall "tf.squeeze" [x, text "axis=" <> integer (shapeLen @ 
 squeeze0 :: ∀ s t. KnownLen s => Tensor (1 ': s) t -> Tensor s t
 squeeze0 = squeeze @ '[]
 
+reshape2 :: ∀ m n s t. (KnownNat m, KnownNat n, KnownShape s) => Tensor (m ': n ': s) t -> Tensor (m*n ': s) t
+reshape2 (T t) = T (funcall "tf.reshape" [t, showShape @(m*n ': s)])
 
 unstack :: ∀ s (n::Nat) t. (KnownShape s, KnownNat n) => Tensor (n ': s) t -> Gen (V n (T s t))
 unstack (T x) = do
@@ -131,6 +137,34 @@ gather = binOp "tf.gather"
 
 negate :: ∀ s t. T s t -> T s t
 negate = unOp "-"
+
+-- convolutionNWC :: forall outputChannels  inputSpatialShape inChannels batchSize t.
+--                   T ('[inChannels] ++ inputSpatialShape ++ '[batchSize]) t ->
+--                   T ('[outputChannels,inChannels] ++ filterSpatialShape) t ->
+--                   T ('[outputChannels] ++ inputSpatialShape ++ '[batchSize]) t
+-- convolutionNWC (T input) (T filters) = T (funcall "tf.convolution" [input,filters,named "data_format" (text "NWC")])
+
+convolutionNWC' :: forall outputChannels filterSpatialShape inChannels s t.
+                  ((1 + Length filterSpatialShape) ~ Length s) => -- the last dim of s is the batch size
+                  T ('[inChannels] ++ s) t ->
+                  T ('[outputChannels,inChannels] ++ filterSpatialShape) t ->
+                  T ('[outputChannels] ++ s) t
+convolutionNWC' (T input) (T filters) = T (funcall "tf.convolution" [input,filters,named "data_format" (text "NWC")])
+
+-- poolNC :: forall dim s inputSpatialShape channels batchSize t.
+--                   (inputSpatialShape ~ Take dim s, '[batchSize] ~ Drop dim s) =>
+--                   T ('[channels] ++ s) t ->
+--                   Vec dim  -> String -> String -> 
+--                   T ('[channels] ++ s) t
+-- poolNC (T input) windowShape poolingType padding =
+--    T (funcall "tf.nn.pool" [input,list (map float (vecToList windowShape)),text poolingType,text padding,named "data_format" (text "NWC")])
+
+-- Difficulty: relate windowSize, inputSpatialShape, outputSpatialShape
+
+
+
+softmax0 :: T (n ': s) 'Float32 -> T (n ': s) 'Float32
+softmax0 = unOp "tf.nn.softmax"
 
 -------------------------
 -- Generic parameters
