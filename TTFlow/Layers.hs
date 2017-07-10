@@ -43,21 +43,21 @@ matvecmul m v = matmul v (transpose m)
 
 
 -- A linear function form a to b is a matrix and a bias.
-type (a ⊸ b) = (Tensor '[a,b] 'Float32, Tensor '[b] 'Float32)
+type (a ⊸ b) = (Tensor '[a,b] Float32, Tensor '[b] Float32)
 
 -- | Apply a linear function
-(#) :: (a ⊸ b) -> T '[a,batchSize] 'Float32 -> Tensor '[b,batchSize] 'Float32
-(weightMatrix, bias) # v = weightMatrix ∙ v ⊕ bias
+(#) :: (a ⊸ b) -> T '[a,batchSize] Float32 -> Tensor '[b,batchSize] Float32
+(weightMatrix, bias) # v = weightMatrix ∙ v + bias
 
 -----------------------
 -- Feed-forward layers
 
 -- | embedding layer
 embedding :: ∀ embeddingSize numObjects batchSize t.
-             Tensor '[numObjects, embeddingSize] t -> Tensor '[1,batchSize] 'Int32 -> Tensor '[embeddingSize,batchSize] t
+             Tensor '[numObjects, embeddingSize] t -> Tensor '[1,batchSize] Int32 -> Tensor '[embeddingSize,batchSize] t
 embedding param input = gather @ '[embeddingSize] (transpose param) (squeeze0 input)
 
-dense :: ∀m n batchSize. (n ⊸ m) -> Tensor '[n, batchSize] 'Float32 -> Tensor '[m, batchSize] 'Float32
+dense :: ∀m n batchSize. (n ⊸ m) -> Tensor '[n, batchSize] Float32 -> Tensor '[m, batchSize] Float32
 dense lf t = (lf # t)
 
 
@@ -76,7 +76,7 @@ conv (filters,bias) input = initLast @s (add @'[Last s] c  bias)
 
 maxPool2D :: forall stridex (stridey::Nat) batch height width channels.
              (KnownNat stridex, KnownNat stridey) =>
-             T '[channels,width*stridex,height*stridex,batch] 'Float32 -> T '[channels,width,height,batch] 'Float32
+             T '[channels,width*stridex,height*stridex,batch] Float32 -> T '[channels,width,height,batch] Float32
 maxPool2D (T value) = T (funcall "tf.nn.max_pool" [value, showShape @'[1,stridex,stridey,1], showShape @'[1,stridex,stridey,1] ])
 
 -------------------------------
@@ -98,15 +98,15 @@ lstm :: ∀ n x bs. (KnownNat bs) =>
          ((n + x) ⊸ n),
          ((n + x) ⊸ n),
          ((n + x) ⊸ n)) ->
-        RnnCell (T '[n,bs] 'Float32, T '[n,bs] 'Float32) (Tensor '[x,bs] 'Float32) (Tensor '[n,bs] 'Float32)
+        RnnCell (T '[n,bs] Float32, T '[n,bs] Float32) (Tensor '[x,bs] Float32) (Tensor '[n,bs] Float32)
 lstm (wf,wi,wc,wo) ((ht1 , ct1) , input) = do
   hx <- assign (concat0 ht1 input)
   let f = sigmoid (wf # hx)
       i = sigmoid (wi # hx)
       cTilda = tanh (wc # hx)
       o = sigmoid (wo # hx)
-  c <- assign ((f ⊙ ct1) ⊕ (i ⊙ cTilda))
-  h <- assign (o ⊕ tanh c)
+  c <- assign ((f ⊙ ct1) + (i ⊙ cTilda))
+  h <- assign (o + tanh c)
   return ((c , h) , h)
 
 -- | Stack two RNN cells

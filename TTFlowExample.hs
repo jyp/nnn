@@ -12,9 +12,8 @@ import TTFlow
 (#>) :: forall b c a. (a -> b) -> (b -> c) -> a -> c
 (#>) = flip (.)
 
-mnist :: forall batchSize. KnownNat batchSize =>
-         Tensor '[1,28,28,batchSize] 'Float32 -> Gen (Tensor '[10,batchSize] 'Float32)
-mnist input = do
+mnist :: forall batchSize. KnownNat batchSize => Model [1,28,28,batchSize] Float32  '[batchSize] Int64
+mnist input gold = do
   (filters1,filters2) <- parameter "conv"
   (w1,w2) <- parameter "dense"
   let nn = (relu . conv @32 @'[5,5] filters1) #>
@@ -24,10 +23,10 @@ mnist input = do
            (reshape2 . reshape2) #>
            (relu . dense @1024 w1) #>
            dense @10 w2
-  return (nn input)
+      logits = nn input
+  categorical logits gold
 
-
-agreement :: KnownNat batchSize => Tensor '[20,batchSize] 'Int32 -> Gen (Tensor '[20,batchSize] 'Float32)
+agreement :: KnownNat batchSize => Tensor '[20,batchSize] Int32 -> Gen (Tensor '[20,batchSize] Float32)
 agreement input' = do
   let input = expandDim1 input'
   (embs,lstm1,lstm2,w) <- parameter "params"
@@ -47,7 +46,7 @@ infixr |>
 
 
 main :: IO ()
-main = writeFile "ttflow_example.py" (generate $ compile @1024 agreement crossEntropy)
+main = writeFile "ttflow_example.py" (generate $ compile (mnist @1024))
 
 
 

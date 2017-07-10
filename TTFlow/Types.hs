@@ -1,3 +1,4 @@
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# OPTIONS_GHC -fplugin GHC.TypeLits.KnownNat.Solver #-}
@@ -26,7 +27,8 @@ import Text.PrettyPrint.Compact hiding (Last)
 import GHC.TypeLits
 import Data.Proxy
 import Control.Monad.State
-import GHC.Prim (unsafeCoerce#)
+import Data.Char (toLower)
+-- import GHC.Prim (unsafeCoerce#)
 type DOC = Doc ()
 
 type family (++) xs ys where
@@ -99,12 +101,21 @@ type family Drop n xs where
    Drop 'Zero xs            =  xs
    Drop ('Succ n) (x ': xs) =  Drop n xs
 
+data Kind = Float | Int | Bool deriving Show
+data NBits = B32 | B64 | B1 deriving Show
+data Typ = Typ Kind NBits
 
-data Typ = Float32 | Int32
+type Float32 = 'Typ 'Float 'B32
+type Int32 = 'Typ 'Int 'B32
+type Int64 = 'Typ 'Int 'B64
+type TFBool = 'Typ 'Bool 'B1
 
 instance Show Typ where
-  show Float32 = "tf.float32"
-  show Int32 = "tf.int32"
+  show (Typ Bool _)= "tf.bool"
+  show (Typ k l) = "tf." ++ map toLower (show k) ++ drop 1 (show l)
+
+showTyp :: forall t. KnownTyp t => DOC
+showTyp = text (show (typVal @t))
 
 type Shape = [Nat]
 
@@ -128,14 +139,22 @@ instance (KnownNat x, KnownShape xs) => KnownShape (x ': xs) where
 
 class KnownTyp t where
   typVal :: Typ
-instance KnownTyp 'Float32 where
-  typVal = Float32
+class KnownBits t where
+  bitsVal :: NBits
 
-instance KnownTyp 'Int32 where
-  typVal = Int32
+instance KnownBits 'B32 where bitsVal = B32
+instance KnownBits 'B64 where bitsVal = B64
+instance (KnownBits l, KnownKind k) => KnownTyp ('Typ k l) where
+  typVal = Typ (kindVal @k) (bitsVal @l)
 
-showTyp :: ∀ t. KnownTyp t => DOC
-showTyp = text (show (typVal @t))
+class KnownKind t where
+  kindVal :: Kind
+
+instance KnownKind 'Float where
+  kindVal = Float
+
+instance KnownKind 'Int where
+  kindVal = Int
 
 
 class KnownLen s where

@@ -29,6 +29,8 @@ import TTFlow.Types
 zeros :: ∀ t (shape :: Shape). KnownShape shape => (T shape t)
 zeros = T (funcall "tf.zeros" [(showShape @ shape)])
 
+ones :: ∀ t (shape :: Shape). KnownShape shape => (T shape t)
+ones = T (funcall "tf.ones" [(showShape @ shape)])
 
 -- | Declare a parameter to optimize.
 parameter' :: ∀ (shape :: Shape) t. String -> T shape t -> Gen (T shape t)
@@ -56,20 +58,29 @@ reduceSum, reduceMean :: ∀ s s' n t. KnownLen s' => Tensor (s ++ (n ': s')) t 
 reduceSum = reduce @s @s' @n "sum"
 reduceMean = reduce @s @s' @n "mean"
 
-reduceSum0 :: ∀ s' n. KnownLen s' => Tensor (n ': s') 'Float32 -> Tensor s' 'Float32
+reduceSum0 :: ∀ s' n. KnownLen s' => Tensor (n ': s') Float32 -> Tensor s' Float32
 reduceSum0 = reduceSum @'[]
 
 add :: ∀ s d t. Tensor (d++s) t -> Tensor d t -> Tensor (d++s) t -- note ++s for for 'broadcasting'
 add = binOp "tf.add"
 
-add_n :: ∀ s t. [Tensor s t] -> Tensor s t
-add_n = error "add_n not implemented"
+-- add_n :: ∀ s t. [Tensor s t] -> Tensor s t
+-- add_n = error "add_n not implemented"
 
-(⊕) :: ∀ (d :: Shape) (s :: Shape) t. Tensor (d ++ s) t -> Tensor d t -> Tensor (d ++ s) t
-(⊕) = add @s @d
+(+) :: ∀ (d :: Shape) (s :: Shape) t. Tensor (d ++ s) t -> Tensor d t -> Tensor (d ++ s) t
+(+) = add @s @d
+
+(⊕) :: ∀  (s :: Shape) t. Tensor s t -> Tensor s t -> Tensor s t
+(⊕) = binOp "tf.add"
+
+(⊝) :: ∀ (d :: Shape) (s :: Shape) t. Tensor s t -> Tensor s t -> Tensor s t
+(⊝) = binOp "tf.subtract"
 
 multiply :: Tensor d t -> Tensor d t -> Tensor d t
 multiply = binOp "tf.multiply"
+
+equal :: Tensor d t -> Tensor d t -> Tensor d TFBool
+equal = binOp "tf.equal"
 
 (⊙) :: ∀ (d :: Shape) t. Tensor d t -> Tensor d t -> Tensor d t
 (⊙) = multiply
@@ -77,8 +88,7 @@ multiply = binOp "tf.multiply"
 matmul :: Tensor (o ': n ': s) t -> Tensor (m ': o ': s) t -> Tensor (m ': n ': s) t
 matmul = binOp "tf.matmul"
 
-
-sigmoid, tanh, log, relu :: ∀ s. Tensor s 'Float32 -> Tensor s 'Float32
+sigmoid, tanh, log, relu :: ∀ s. Tensor s Float32 -> Tensor s Float32
 sigmoid = unOp "tf.sigmoid"
 tanh = unOp "tf.tanh"
 log = unOp "tf.log"
@@ -132,7 +142,7 @@ stack (V xs) = T (funcall "tf.stack" [(list [x | T x <- xs]), text "axis=" <> in
 transpose :: ∀ s t. T (Reverse s) t -> T s t
 transpose = unOp "tf.transpose"
 
-gather :: ∀s n indexShape t. T (s ++ '[n]) t -> T indexShape 'Int32 -> T (s ++ indexShape) t
+gather :: ∀s n indexShape t. T (s ++ '[n]) t -> T indexShape Int32 -> T (s ++ indexShape) t
 gather = binOp "tf.gather"
 
 negate :: ∀ s t. T s t -> T s t
@@ -163,8 +173,29 @@ convolutionNWC' (T input) (T filters) = T (funcall "tf.convolution" [input,filte
 
 
 
-softmax0 :: T (n ': s) 'Float32 -> T (n ': s) 'Float32
+softmax0 :: T (n ': s) Float32 -> T (n ': s) Float32
 softmax0 = unOp "tf.nn.softmax"
+
+round :: T s ('Typ 'Float w) -> T s ('Typ 'Float w)
+round = unOp "tf.round"
+
+
+argmax0 :: forall n s. KnownLen s => T (n ': s) Float32 -> T s Int64
+argmax0 (T t) = T (funcall "tf.argmax" [t, showShapeLen @ s])
+
+
+cast :: forall u s t. KnownTyp u => KnownLen s => T s t -> T s u
+cast (T t) = T (funcall "tf.cast" [t, showTyp @ u])
+
+
+softmaxCrossEntropyWithLogits :: Tensor '[numClasses,batchSize] Float32 -> Tensor '[numClasses,batchSize] Float32 -> Tensor '[batchSize] Float32
+softmaxCrossEntropyWithLogits (T labels) (T logits) =
+  T (funcall "tf.nn.softmax_cross_entropy_with_logits" [named "labels" labels,named "logits" logits])
+
+
+oneHot :: forall numClasses w batchSize. KnownNat numClasses =>
+          Tensor '[batchSize] ('Typ 'Int w) -> Tensor '[numClasses,batchSize] Float32
+oneHot (T indices) = T (funcall "tf.one_hot" [indices, named "depth" (showDim @numClasses), named "axis" (int 0)])
 
 -------------------------
 -- Generic parameters

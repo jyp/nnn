@@ -25,40 +25,66 @@ import TTFlow.Types
 import TTFlow.TF
 import qualified Prelude ()
 import Prelude (($),(=<<),return)
-import Text.PrettyPrint.Compact (text)
+import Text.PrettyPrint.Compact (int,text)
 import Data.Monoid hiding (Last)
+import GHC.TypeLits (KnownNat)
 
 
--------------------
--- Loss functions
 
-type Loss s bs t = Last s ~ bs => Tensor s t -> Tensor s t -> Tensor '[bs] 'Float32
+-- crossEntropy :: Tensor '[n,bs] Float32 -> Tensor '[n,bs] Float32 -> Tensor '[bs] Float32
+-- crossEntropy y_ y = negate (reduceSum0 (y_ ⊙ log y))
 
+  -- (- t * log(y) - (1 - t) * log(1 - y))
 
-crossEntropy :: Tensor '[n,bs] 'Float32 -> Tensor '[n,bs] 'Float32 -> Tensor '[bs] 'Float32
-crossEntropy y_ y = negate (reduceSum0 (y_ ⊙ log y))
-
-softmaxCrossEntropyWithLogits :: Tensor '[numClasses,batchSize] 'Float32 -> Tensor '[numClasses,batchSize] 'Float32 -> Tensor '[batchSize] 'Float32
-softmaxCrossEntropyWithLogits (T labels) (T logits) =
-  T (funcall "tf.nn.softmax_cross_entropy_with_logits" [named "labels" labels,named "logits" logits])
+binaryCrossEntropy :: KnownNat bs => Tensor '[bs] Float32 -> Tensor '[bs] Float32 -> Tensor '[bs] Float32
+binaryCrossEntropy t y = negate (t ⊙ log y) ⊝ (ones ⊝ t) ⊙ log (ones ⊝ y)
 
 --------------------------------
 -- Model maker.
 
 type Batch s batchSize = Tensor (s++'[batchSize])
 
-compile :: ∀ bs s (s'::Shape) t u. (Last s'~bs, KnownShape s, KnownShape s',KnownTyp t, KnownTyp u) =>
-          (Tensor s t -> Gen (Tensor s' u)) -> Loss s' bs u -> Gen ()
-compile model lossFunction = do
+-- data ModelOutput {x , y,  loss :: , accuracy, y_, }
+
+-- | First type argument is the number of classes.
+-- @classes logits gold@
+-- return (prediction, accuraccy, loss)
+-- accuraccy and prediction are averaged over the batch.
+categorical :: forall n bs. KnownNat n => Model '[n,bs] Float32 '[bs] Int64
+categorical logits y = do
+  let y_ = argmax0 logits
+  correctPrediction <- assign (equal y_ y)
+  accuracy <- assign (reduceMeanAll (cast @Float32 correctPrediction))
+  loss <- assign (reduceMeanAll (softmaxCrossEntropyWithLogits (oneHot y) logits))
+  return (y_,accuracy,loss)
+
+type Scalar t = T '[] t
+
+
+-- | (input value, gold value) ↦ (prediction, accuracy, loss)
+type Model input tIn output tOut = T input tIn -> T output tOut -> Gen (T output tOut, Scalar Float32, Scalar Float32)
+
+
+binary :: forall bs. (KnownNat bs) => Model '[bs] Float32 '[bs] Int32
+binary score y = do
+  sigy_ <- assign (sigmoid score)
+  let y_ = cast @Int32 (round sigy_)
+  correctPrediction <- assign (equal y_ y)
+  accuracy <- assign (reduceMeanAll (cast @Float32 correctPrediction))
+  loss <- assign (reduceMeanAll (binaryCrossEntropy (cast @Float32 y) sigy_))
+  return (y_,accuracy,loss)
+
+
+compile :: (KnownShape input, KnownTyp tIn, KnownShape output, KnownTyp tOut) =>
+           Model input tIn output tOut  -> Gen ()
+compile model = do
   gen (text "import tensorflow as tf")
   genFun "mkModel" [] $ do
     x <- placeholder "x"
-    y_ <- placeholder "y_"
-    y <- assign =<< model x
-    loss <- assign (reduceMeanAll (lossFunction y y_))
-    gen (text "return " <> tuple [fromTensor x,fromTensor y,fromTensor y_,fromTensor loss])
-    return ()
-
+    y <- placeholder "y"
+    (prediction,accuracy,loss) <- model x y
+    y_ <- assign prediction
+    gen (text "return " <> tuple [fromTensor x,fromTensor y,fromTensor y_,fromTensor accuracy,fromTensor loss])
 
 
 -- Local Variables:
