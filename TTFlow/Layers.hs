@@ -20,8 +20,10 @@
 module TTFlow.Layers where
 
 import Prelude hiding (tanh,Num(..),Floating(..))
+import qualified Prelude
 import GHC.TypeLits
 import Text.PrettyPrint.Compact (text)
+import Data.Proxy
 
 import TTFlow.TF
 import TTFlow.Types
@@ -57,20 +59,35 @@ embedding :: ∀ embeddingSize numObjects batchSize t.
              Tensor '[numObjects, embeddingSize] t -> Tensor '[1,batchSize] Int32 -> Tensor '[embeddingSize,batchSize] t
 embedding param input = gather @ '[embeddingSize] (transpose param) (squeeze0 input)
 
-dense :: ∀m n batchSize. (n ⊸ m) -> Tensor '[n, batchSize] Float32 -> Tensor '[m, batchSize] Float32
+
+glorotUniform :: forall a b t. (KnownNat a, KnownNat b, KnownTyp t) => Tensor '[a,b] t
+glorotUniform = randomUniform low high
+  where
+    low, high, fan_in, fan_out :: Float
+    low = -4.0 Prelude.* Prelude.sqrt(6.0/(fan_in Prelude.+ fan_out)) -- use 4 for sigmoid, 1 for tanh activation 
+    high = 4.0 Prelude.* Prelude.sqrt(6.0/(fan_in Prelude.+ fan_out))
+    fan_in = fromIntegral (natVal (Proxy @ a))
+    fan_out = fromIntegral (natVal (Proxy @ b))
+
+denseInitialiser :: (KnownNat n, KnownNat m) => (n ⊸ m)
+denseInitialiser = (glorotUniform,truncatedNormal 0.1)
+
+dense :: ∀m n batchSize. (n ⊸ m) -> Tensor '[n, batchSize] Float32 -> (Tensor '[m, batchSize] Float32)
 dense lf t = (lf # t)
 
 
 ------------------------
 -- Convolutional layers
+convInitialiser :: (KnownShape s1, KnownShape s2) =>
+                   (T s1 ('Typ 'Float w), T s2 ('Typ 'Float w))
+convInitialiser = (truncatedNormal 0.1, constant 0.1)
 
-conv :: forall outputChannels filterSpatialShape inChannels s t.
+conv :: forall outChannels filterSpatialShape inChannels s t.
                   ((1 + Length filterSpatialShape) ~ Length s,
                    KnownShape s) => -- the last dim of s is the batch size
-                  (T ('[outputChannels,inChannels] ++ filterSpatialShape) t, T ('[outputChannels] ++ Init s) t) ->
-                  T ('[inChannels] ++ s) t ->
-                  T ('[outputChannels] ++ s) t
-conv (filters,bias) input = initLast @s (add @'[Last s] c  bias)
+                  (T ('[outChannels,inChannels] ++ filterSpatialShape) t, T ('[outChannels] ++ Init s) t) ->
+                  T ('[inChannels] ++ s) t -> (T ('[outChannels] ++ s) t)
+conv (filters,bias) input = (initLast @s (add @'[Last s] c  bias))
  where c = (convolutionNWC' input filters)
 
 

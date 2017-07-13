@@ -24,8 +24,8 @@ module TTFlow.Learn where
 import TTFlow.Types
 import TTFlow.TF
 import qualified Prelude ()
-import Prelude (($),(=<<),return)
-import Text.PrettyPrint.Compact (int,text)
+import Prelude (($),return)
+import Text.PrettyPrint.Compact (text)
 import Data.Monoid hiding (Last)
 import GHC.TypeLits (KnownNat)
 
@@ -51,7 +51,8 @@ type Batch s batchSize = Tensor (s++'[batchSize])
 -- return (prediction, accuraccy, loss)
 -- accuraccy and prediction are averaged over the batch.
 categorical :: forall n bs. KnownNat n => Model '[n,bs] Float32 '[bs] Int64
-categorical logits y = do
+categorical logits' y = do
+  logits <- assign logits'
   let y_ = argmax0 logits
   correctPrediction <- assign (equal y_ y)
   accuracy <- assign (reduceMeanAll (cast @Float32 correctPrediction))

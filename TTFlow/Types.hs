@@ -178,7 +178,10 @@ shapeToList :: ∀(s::Shape). KnownShape s => [Integer]
 shapeToList = shapeToList' (getShape @ s)
 
 showShape :: ∀ (s :: Shape). KnownShape s => DOC
-showShape = list (map showDim' (reverse (shapeToList @ s)))
+showShape = list (map (showDim' "None") (reverse (shapeToList @ s)))
+
+showShapeMinus :: ∀ (s :: Shape). KnownShape s => DOC
+showShapeMinus = list (map (showDim' "-1") (reverse (shapeToList @ s)))
 
 showShapeLen :: ∀ (s::Shape). KnownLen s => DOC
 showShapeLen = (text . show) (shapeLen @ s)
@@ -186,11 +189,18 @@ showShapeLen = (text . show) (shapeLen @ s)
 rememberNat :: SNat n -> (KnownNat n => r) -> r
 rememberNat (SNat _) k = k
 
-showDim' :: Integer -> DOC
-showDim' n = text (if n == -1 then "None" else show n)
+type None = 514229 --  fibonnaci prime.
+-- type None = 0 - 1 -- GHC does not like negative Nats.
+-- Using a maybe type would be a RPITA.
+
+showDim' :: String -> Integer -> DOC
+showDim' none n = text (if n == 514229 then none else show n)
+
+showDimM :: forall n. KnownNat n => DOC
+showDimM = showDim' "-1" (natVal (Proxy @ n))
 
 showDim :: forall n. KnownNat n => DOC
-showDim = showDim' (natVal (Proxy @ n))
+showDim = showDim' "None" (natVal (Proxy @ n))
 
 --------------------------------
 -- Generation Effects
@@ -233,7 +243,10 @@ tuple :: [DOC] -> DOC
 tuple = parens . sep . punctuate comma
 
 funcall :: String -> [DOC] -> DOC
-funcall f args = text f <> tuple args
+funcall f args = do
+  let as = sep (punctuate comma args)
+  -- (text f <> parens as)
+  (text f <> parens as) <|> ((text f <> "(") $$ (text "  " <> as <> ")"))
 
 binOp :: ∀ s1 s2 s3 t1 t2 t3. String -> Tensor s1 t1 -> Tensor s2 t2 -> Tensor s3 t3
 binOp op (T x) (T y) = T (funcall op [ x , y])

@@ -73,7 +73,7 @@ add = binOp "tf.add"
 (⊕) :: ∀  (s :: Shape) t. Tensor s t -> Tensor s t -> Tensor s t
 (⊕) = binOp "tf.add"
 
-(⊝) :: ∀ (d :: Shape) (s :: Shape) t. Tensor s t -> Tensor s t -> Tensor s t
+(⊝) :: ∀ (s :: Shape) t. Tensor s t -> Tensor s t -> Tensor s t
 (⊝) = binOp "tf.subtract"
 
 multiply :: Tensor d t -> Tensor d t -> Tensor d t
@@ -127,7 +127,7 @@ squeeze0 :: ∀ s t. KnownLen s => Tensor (1 ': s) t -> Tensor s t
 squeeze0 = squeeze @ '[]
 
 reshape2 :: ∀ m n s t. (KnownNat m, KnownNat n, KnownShape s) => Tensor (m ': n ': s) t -> Tensor (m*n ': s) t
-reshape2 (T t) = T (funcall "tf.reshape" [t, showShape @(m*n ': s)])
+reshape2 (T t) = T (funcall "tf.reshape" [t, showShapeMinus @(m*n ': s)])
 
 unstack :: ∀ s (n::Nat) t. (KnownShape s, KnownNat n) => Tensor (n ': s) t -> Gen (V n (T s t))
 unstack (T x) = do
@@ -184,7 +184,7 @@ argmax0 :: forall n s. KnownLen s => T (n ': s) Float32 -> T s Int64
 argmax0 (T t) = T (funcall "tf.argmax" [t, showShapeLen @ s])
 
 
-cast :: forall u s t. KnownTyp u => KnownLen s => T s t -> T s u
+cast :: forall u s t. KnownTyp u => T s t -> T s u
 cast (T t) = T (funcall "tf.cast" [t, showTyp @ u])
 
 
@@ -197,23 +197,35 @@ oneHot :: forall numClasses w batchSize. KnownNat numClasses =>
           Tensor '[batchSize] ('Typ 'Int w) -> Tensor '[numClasses,batchSize] Float32
 oneHot (T indices) = T (funcall "tf.one_hot" [indices, named "depth" (showDim @numClasses), named "axis" (int 0)])
 
+truncatedNormal :: forall s w. KnownShape s => Float -> T s ('Typ 'Float w)
+truncatedNormal stddev = T (funcall "tf.truncated_normal" [showShape @s, named "stddev" (float stddev)])
+
+randomUniform :: forall s t. (KnownShape s, KnownTyp t) => Float -> Float -> T s t
+randomUniform low high = T (funcall "tf.random_uniform" [showShape @s
+                                                        ,named "minval" (float low)
+                                                        ,named "maxval" (float high)
+                                                        ,named "dtype" (showTyp @t)])
+
+constant :: forall s w. KnownShape s => Float -> T s ('Typ 'Float w)
+constant c = T (funcall "tf.constant" [float c, named "shape" (showShape @s)])
+
 -------------------------
 -- Generic parameters
 
 class Parameter p where
-  parameter :: String -> Gen p
+  parameter :: String -> p -> Gen p
 
 instance KnownShape shape => Parameter (T shape t) where
-  parameter s = parameter' s zeros
+  parameter = parameter'
 
 instance (Parameter p, Parameter q) => Parameter (p,q) where
-  parameter s = (,) <$> parameter (s<>"_fst") <*> parameter (s<>"_snd")
+  parameter s (x,y) = (,) <$> parameter (s<>"_fst") x <*> parameter (s<>"_snd") y
 
 instance (Parameter p1, Parameter p2, Parameter p3) => Parameter (p1,p2,p3) where
-  parameter s = (,,) <$> parameter (s<>"_1") <*> parameter (s<>"_2") <*> parameter (s<>"_3")
+  parameter s (x,y,z) = (,,) <$> parameter (s<>"_1") x <*> parameter (s<>"_2") y <*> parameter (s<>"_3") z
 
 instance (Parameter p1, Parameter p2, Parameter p3, Parameter p4) => Parameter (p1,p2,p3,p4) where
-  parameter s = (,,,) <$> parameter (s<>"_1") <*> parameter (s<>"_2") <*> parameter (s<>"_3") <*> parameter (s<>"_4")
+  parameter s (x,y,z,w) = (,,,) <$> parameter (s<>"_1") x <*> parameter (s<>"_2") y <*> parameter (s<>"_3") z <*> parameter (s<>"_4") w
 
 -- Local Variables:
 -- dante-project-root: ".."
