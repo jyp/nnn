@@ -84,17 +84,21 @@ convInitialiser = (truncatedNormal 0.1, constant 0.1)
 
 conv :: forall outChannels filterSpatialShape inChannels s t.
                   ((1 + Length filterSpatialShape) ~ Length s,
+                   KnownLen filterSpatialShape,
                    KnownShape s) => -- the last dim of s is the batch size
                   (T ('[outChannels,inChannels] ++ filterSpatialShape) t, T ('[outChannels] ++ Init s) t) ->
                   T ('[inChannels] ++ s) t -> (T ('[outChannels] ++ s) t)
 conv (filters,bias) input = (initLast @s (add @'[Last s] c  bias))
- where c = (convolutionNWC' input filters)
+ where c = (convolution input filters)
 
 
 maxPool2D :: forall stridex (stridey::Nat) batch height width channels.
              (KnownNat stridex, KnownNat stridey) =>
              T '[channels,width*stridex,height*stridex,batch] Float32 -> T '[channels,width,height,batch] Float32
-maxPool2D (T value) = T (funcall "tf.nn.max_pool" [value, showShape @'[1,stridex,stridey,1], showShape @'[1,stridex,stridey,1] ])
+maxPool2D (T value) = T (funcall "tf.nn.max_pool" [value
+                                                  ,showShape @'[1,stridex,stridey,1]
+                                                  ,showShape @'[1,stridex,stridey,1]
+                                                  ,named "padding" (str "SAME") ])
 
 -------------------------------
 -- RNN layers and combinators

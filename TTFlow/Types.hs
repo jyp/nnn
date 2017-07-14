@@ -202,6 +202,9 @@ showDimM = showDim' "-1" (natVal (Proxy @ n))
 showDim :: forall n. KnownNat n => DOC
 showDim = showDim' "None" (natVal (Proxy @ n))
 
+str :: Show a => a -> DOC
+str = text . show
+
 --------------------------------
 -- Generation Effects
 

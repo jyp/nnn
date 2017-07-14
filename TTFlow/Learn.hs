@@ -47,9 +47,9 @@ type Batch s batchSize = Tensor (s++'[batchSize])
 -- data ModelOutput {x , y,  loss :: , accuracy, y_, }
 
 -- | First type argument is the number of classes.
--- @classes logits gold@
+-- @categorical logits gold@
 -- return (prediction, accuraccy, loss)
--- accuraccy and prediction are averaged over the batch.
+-- accuracy and prediction are averaged over the batch.
 categorical :: forall n bs. KnownNat n => Model '[n,bs] Float32 '[bs] Int64
 categorical logits' y = do
   logits <- assign logits'
@@ -58,6 +58,20 @@ categorical logits' y = do
   accuracy <- assign (reduceMeanAll (cast @Float32 correctPrediction))
   loss <- assign (reduceMeanAll (softmaxCrossEntropyWithLogits (oneHot y) logits))
   return (y_,accuracy,loss)
+
+-- | First type argument is the number of classes.
+-- @categoricalDistribution logits gold@
+-- return (prediction, accuraccy, loss)
+-- accuracy and prediction are averaged over the batch.
+categoricalDistribution :: forall n bs. KnownNat n => Model '[n,bs] Float32 '[n,bs] Float32
+categoricalDistribution logits' y = do
+  logits <- assign logits'
+  let y_ = softmax0 logits
+  correctPrediction <- assign (equal y_ y)
+  let accuracy = constant 0
+  loss <- assign (reduceMeanAll (softmaxCrossEntropyWithLogits y logits))
+  return (y_,accuracy,loss)
+
 
 type Scalar t = T '[] t
 

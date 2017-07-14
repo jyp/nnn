@@ -126,8 +126,17 @@ squeeze (T x) = T (funcall "tf.squeeze" [x, text "axis=" <> integer (shapeLen @ 
 squeeze0 :: ∀ s t. KnownLen s => Tensor (1 ': s) t -> Tensor s t
 squeeze0 = squeeze @ '[]
 
-reshape2 :: ∀ m n s t. (KnownNat m, KnownNat n, KnownShape s) => Tensor (m ': n ': s) t -> Tensor (m*n ': s) t
-reshape2 (T t) = T (funcall "tf.reshape" [t, showShapeMinus @(m*n ': s)])
+linearize2 :: ∀ m n s t. (KnownNat m, KnownNat n, KnownShape s) => Tensor (m ': n ': s) t -> Tensor (m*n ': s) t
+linearize2 (T t) = T (funcall "tf.reshape" [t, showShapeMinus @(m*n ': s)])
+
+linearize3 :: ∀ m n o s t. (KnownNat m, KnownNat n, KnownNat o, KnownShape s) => Tensor (m ': n ': o ': s) t -> Tensor (m*n*o ': s) t
+linearize3 (T t) = T (funcall "tf.reshape" [t, showShapeMinus @(m*n*o ': s)])
+
+arrange2 :: ∀ m n s t. (KnownNat m, KnownNat n, KnownShape s) => Tensor (m*n ': s) t -> Tensor (m ': n ': s) t
+arrange2 (T t) = T (funcall "tf.reshape" [t, showShapeMinus @(m ': n ': s)])
+
+arrange3 :: ∀ m n o s t. (KnownNat m, KnownNat n, KnownNat o, KnownShape s) => Tensor (m*n*o ': s) t -> Tensor (m ': n ': o ': s) t
+arrange3 (T t) = T (funcall "tf.reshape" [t, showShapeMinus @(m ': n ': o ': s)])
 
 unstack :: ∀ s (n::Nat) t. (KnownShape s, KnownNat n) => Tensor (n ': s) t -> Gen (V n (T s t))
 unstack (T x) = do
@@ -148,18 +157,20 @@ gather = binOp "tf.gather"
 negate :: ∀ s t. T s t -> T s t
 negate = unOp "-"
 
--- convolutionNWC :: forall outputChannels  inputSpatialShape inChannels batchSize t.
---                   T ('[inChannels] ++ inputSpatialShape ++ '[batchSize]) t ->
---                   T ('[outputChannels,inChannels] ++ filterSpatialShape) t ->
---                   T ('[outputChannels] ++ inputSpatialShape ++ '[batchSize]) t
--- convolutionNWC (T input) (T filters) = T (funcall "tf.convolution" [input,filters,named "data_format" (text "NWC")])
-
-convolutionNWC' :: forall outputChannels filterSpatialShape inChannels s t.
+convolution :: forall outputChannels filterSpatialShape inChannels s t.
+                KnownLen filterSpatialShape =>
                   ((1 + Length filterSpatialShape) ~ Length s) => -- the last dim of s is the batch size
                   T ('[inChannels] ++ s) t ->
                   T ('[outputChannels,inChannels] ++ filterSpatialShape) t ->
                   T ('[outputChannels] ++ s) t
-convolutionNWC' (T input) (T filters) = T (funcall "tf.convolution" [input,filters,named "data_format" (text "NWC")])
+convolution (T input) (T filters) = T (funcall "tf.nn.convolution" [input,filters
+                                                                   ,named "padding" (text (show "SAME")) -- otherwise the shape s changes
+                                                                   ,named "data_format" (text (show dataFormat))])
+  where dataFormat = case shapeLen @ filterSpatialShape of
+          1 -> "NWC"
+          2 -> "NHWC"
+          3 -> "NDHWC"
+          _ -> error "convolution: more than 3 spatial dimensions are not supported!"
 
 -- poolNC :: forall dim s inputSpatialShape channels batchSize t.
 --                   (inputSpatialShape ~ Take dim s, '[batchSize] ~ Drop dim s) =>
