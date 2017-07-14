@@ -67,8 +67,8 @@ categoricalDistribution :: forall n bs. KnownNat n => Model '[n,bs] Float32 '[n,
 categoricalDistribution logits' y = do
   logits <- assign logits'
   let y_ = softmax0 logits
-  correctPrediction <- assign (equal y_ y)
-  let accuracy = constant 0
+  correctPrediction <- assign (equal (argmax0 logits) (argmax0 y))
+  accuracy <- assign (reduceMeanAll (cast @Float32 correctPrediction))
   loss <- assign (reduceMeanAll (softmaxCrossEntropyWithLogits y logits))
   return (y_,accuracy,loss)
 
