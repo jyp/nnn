@@ -18,11 +18,10 @@ mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
 def train_generator():
     for _ in range(1000):
         yield mnist.train.next_batch(100)
-    return
 
 def valid_generator():
-    return
+    return []
 
 sess = tf.Session()
 
-ttflow_rts.train(sess,model,tf.train.AdamOptimizer(1e-4),train_generator,valid_generator,1)
+ttflow_rts.train(sess,model,tf.train.AdamOptimizer(1e-4),train_generator,valid_generator,10)
